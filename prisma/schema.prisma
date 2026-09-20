@@ -1,0 +1,775 @@
+// ============================================================
+// Kapy Pharma — ERP & CRM System
+// Prisma Schema
+// ============================================================
+// Database: PostgreSQL
+// ORM: Prisma
+// ============================================================
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// ============================================================
+// ENUMS
+// ============================================================
+
+enum WarehouseType {
+  MAIN        // HQ in Sohag — receives from suppliers
+  SUB         // Branch warehouses — receive ONLY from main warehouse
+}
+
+enum StockMovementType {
+  INBOUND           // Stock coming in (from supplier or main warehouse)
+  OUTBOUND          // Stock going out (to sub-warehouse or to sales rep)
+  RETURN_INBOUND    // Stock returned back to this warehouse
+  RETURN_OUTBOUND   // Stock returned out (e.g., rep returns to warehouse)
+  ADJUSTMENT        // Manual inventory correction
+}
+
+enum StockMovementSource {
+  SUPPLIER          // Inbound from a supplier/factory
+  WAREHOUSE         // Transfer between warehouses (main → sub)
+  SALES_REP         // Issued to or returned from a sales rep
+  PHARMACY          // Returned by a pharmacy
+}
+
+enum InvoiceType {
+  CASH
+  CREDIT            // آجل
+}
+
+enum InvoiceStatus {
+  DRAFT
+  CONFIRMED
+  PARTIALLY_PAID
+  PAID
+  OVERDUE
+  CANCELLED
+}
+
+enum PaymentMethod {
+  CASH
+  BANK_TRANSFER
+  CHECK
+}
+
+enum TransactionType {
+  CASH_IN           // Revenue, payment received
+  CASH_OUT          // Expense, supplier payment, salary, etc.
+  TRANSFER_IN       // Internal transfer received
+  TRANSFER_OUT      // Internal transfer sent
+}
+
+enum TransactionCategory {
+  INVOICE_PAYMENT
+  SUPPLIER_PAYMENT
+  REP_SALARY
+  REP_BONUS
+  REP_DEDUCTION
+  OPERATING_EXPENSE
+  WAREHOUSE_EXPENSE
+  OTHER
+}
+
+enum AlertType {
+  PHARMACY_TARGET_REACHED
+  REP_TARGET_REACHED
+  INVOICE_OVERDUE
+  LOW_STOCK
+}
+
+enum AlertStatus {
+  UNREAD
+  READ
+  DISMISSED
+}
+
+enum UserRole {
+  SUPER_ADMIN
+  ADMIN
+  WAREHOUSE_MANAGER
+  SALES_MANAGER
+  ACCOUNTANT
+  SALES_REP
+  VIEWER
+}
+
+// ============================================================
+// AUTHENTICATION & USERS
+// ============================================================
+
+model User {
+  id            String    @id @default(cuid())
+  email         String    @unique
+  name          String
+  passwordHash  String
+  role          UserRole  @default(VIEWER)
+  isActive      Boolean   @default(true)
+  createdAt     DateTime  @default(now())
+  updatedAt     DateTime  @updatedAt
+
+  // Relations
+  salesRep      SalesRep?
+  alerts        Alert[]
+
+  @@map("users")
+}
+
+// ============================================================
+// GEOGRAPHIC / ORGANIZATIONAL
+// ============================================================
+
+model Governorate {
+  id          String   @id @default(cuid())
+  name        String   @unique   // e.g., "سوهاج", "القاهرة"
+  nameEn      String?  @unique
+  code        String?  @unique   // e.g., "SOH", "CAI"
+  createdAt   DateTime @default(now())
+
+  // Relations
+  warehouses  Warehouse[]
+  pharmacies  Pharmacy[]
+  salesReps   SalesRep[]
+
+  @@map("governorates")
+}
+
+// ============================================================
+// WAREHOUSES (المخازن)
+// ============================================================
+
+model Warehouse {
+  id             String        @id @default(cuid())
+  name           String
+  type           WarehouseType
+  address        String?
+  governorateId  String
+  isActive       Boolean       @default(true)
+  createdAt      DateTime      @default(now())
+  updatedAt      DateTime      @updatedAt
+
+  // Relations
+  governorate              Governorate        @relation(fields: [governorateId], references: [id])
+  stockItems               StockItem[]
+  stockMovementsAsSource   StockMovement[]    @relation("SourceWarehouse")
+  stockMovementsAsTarget   StockMovement[]    @relation("TargetWarehouse")
+  repInventoryIssuances    RepInventory[]
+  managers                 WarehouseManager[]
+
+  @@map("warehouses")
+}
+
+model WarehouseManager {
+  id          String   @id @default(cuid())
+  warehouseId String
+  name        String
+  phone       String?
+  email       String?  @unique
+  createdAt   DateTime @default(now())
+
+  // Relations
+  warehouse   Warehouse @relation(fields: [warehouseId], references: [id])
+
+  @@map("warehouse_managers")
+}
+
+// ============================================================
+// SUPPLIERS / FACTORIES (الموردون / المصانع)
+// ============================================================
+
+model Supplier {
+  id            String   @id @default(cuid())
+  name          String
+  contactPerson String?
+  phone         String?
+  email         String?
+  address       String?
+  taxNumber     String?
+  isActive      Boolean  @default(true)
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+
+  // Relations
+  products       SupplierProduct[]
+  stockMovements StockMovement[]
+  transactions   Transaction[]
+
+  @@map("suppliers")
+}
+
+// ============================================================
+// PRODUCTS (المنتجات)
+// ============================================================
+
+model Category {
+  id        String    @id @default(cuid())
+  name      String    @unique   // e.g., "مضادات حيوية", "مسكنات"
+  nameEn    String?
+  createdAt DateTime  @default(now())
+
+  // Relations
+  products  Product[]
+
+  @@map("categories")
+}
+
+model Product {
+  id                   String   @id @default(cuid())
+  name                 String
+  nameEn               String?
+  sku                  String   @unique       // Stock Keeping Unit / barcode
+  categoryId           String
+  unit                 String   @default("علبة")  // e.g., box, strip, vial
+  packageSize          Int      @default(1)   // units per package
+  sellingPrice         Decimal  @db.Decimal(12, 2)
+  costPrice            Decimal? @db.Decimal(12, 2)
+  vatRate              Decimal  @default(0)   @db.Decimal(5, 2) // percentage
+  reorderLevel         Int      @default(0)   // triggers low-stock alert
+  requiresPrescription Boolean  @default(false)
+  isActive             Boolean  @default(true)
+  createdAt            DateTime @default(now())
+  updatedAt            DateTime @updatedAt
+
+  // Relations
+  category              Category            @relation(fields: [categoryId], references: [id])
+  suppliers             SupplierProduct[]
+  stockItems            StockItem[]
+  stockMovementItems    StockMovementItem[]
+  invoiceItems          InvoiceItem[]
+  repInventoryItems     RepInventoryItem[]
+
+  @@map("products")
+}
+
+/// Junction table linking products to their possible suppliers
+model SupplierProduct {
+  id          String   @id @default(cuid())
+  supplierId  String
+  productId   String
+  supplierSku String?  // supplier's own product code
+  costPrice   Decimal  @db.Decimal(12, 2)
+  isPreferred Boolean  @default(false)
+  createdAt   DateTime @default(now())
+
+  // Relations
+  supplier    Supplier @relation(fields: [supplierId], references: [id])
+  product     Product  @relation(fields: [productId], references: [id])
+
+  @@unique([supplierId, productId])
+  @@map("supplier_products")
+}
+
+// ============================================================
+// STOCK (المخزون)
+// ============================================================
+
+/// Current stock balance per product per warehouse (materialized balance)
+model StockItem {
+  id            String   @id @default(cuid())
+  warehouseId   String
+  productId     String
+  quantity      Int      @default(0)
+  reservedQty   Int      @default(0)  // reserved for pending orders
+  updatedAt     DateTime @updatedAt
+
+  // Relations
+  warehouse     Warehouse @relation(fields: [warehouseId], references: [id])
+  product       Product   @relation(fields: [productId], references: [id])
+
+  @@unique([warehouseId, productId])
+  @@map("stock_items")
+}
+
+/// Immutable ledger of every stock movement (audit trail)
+model StockMovement {
+  id                String              @id @default(cuid())
+  movementType      StockMovementType
+  source            StockMovementSource
+  sourceWarehouseId String?             // null if source is supplier or rep
+  targetWarehouseId String?             // null if outbound to rep
+  supplierId        String?             // populated when source = SUPPLIER
+  salesRepId        String?             // populated when source/target = SALES_REP
+  referenceNumber   String?             // e.g., delivery note, PO number
+  notes             String?
+  movedAt           DateTime            @default(now())
+  createdAt         DateTime            @default(now())
+
+  // Relations
+  sourceWarehouse   Warehouse?          @relation("SourceWarehouse", fields: [sourceWarehouseId], references: [id])
+  targetWarehouse   Warehouse?          @relation("TargetWarehouse", fields: [targetWarehouseId], references: [id])
+  supplier          Supplier?           @relation(fields: [supplierId], references: [id])
+  salesRep          SalesRep?           @relation(fields: [salesRepId], references: [id])
+  items             StockMovementItem[]
+
+  @@map("stock_movements")
+}
+
+model StockMovementItem {
+  id              String        @id @default(cuid())
+  stockMovementId String
+  productId       String
+  quantity        Int
+  unitCost        Decimal?      @db.Decimal(12, 2)
+  expiryDate      DateTime?
+  batchNumber     String?
+
+  // Relations
+  stockMovement   StockMovement @relation(fields: [stockMovementId], references: [id], onDelete: Cascade)
+  product         Product       @relation(fields: [productId], references: [id])
+
+  @@map("stock_movement_items")
+}
+
+// ============================================================
+// PHARMACIES / CLIENTS (الصيدليات)
+// ============================================================
+
+model Pharmacy {
+  id             String   @id @default(cuid())
+  name           String
+  ownerName      String?
+  licenseNumber  String?  @unique
+  phone          String?
+  address        String?
+  governorateId  String
+  salesTarget    Decimal  @default(0)  @db.Decimal(14, 2) // monthly sales target
+  creditDuration Int?                                      // override: max credit days
+  creditLimit    Decimal? @db.Decimal(14, 2)              // max outstanding credit
+  currentBalance Decimal  @default(0)  @db.Decimal(14, 2) // outstanding (positive = owes us)
+  isActive       Boolean  @default(true)
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+
+  // Relations
+  governorate         Governorate            @relation(fields: [governorateId], references: [id])
+  invoices            Invoice[]
+  payments            Payment[]
+  returns             Return[]
+  assignedReps        RepPharmacy[]
+  targetAttainments   PharmacyTargetPeriod[]
+  alerts              Alert[]
+
+  @@map("pharmacies")
+}
+
+/// Tracks monthly target attainment per pharmacy (for history & alerts)
+model PharmacyTargetPeriod {
+  id           String   @id @default(cuid())
+  pharmacyId   String
+  periodYear   Int
+  periodMonth  Int      // 1-12
+  target       Decimal  @db.Decimal(14, 2)
+  achieved     Decimal  @default(0) @db.Decimal(14, 2)
+  alertSent    Boolean  @default(false)
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  // Relations
+  pharmacy     Pharmacy @relation(fields: [pharmacyId], references: [id])
+
+  @@unique([pharmacyId, periodYear, periodMonth])
+  @@map("pharmacy_target_periods")
+}
+
+// ============================================================
+// SALES REPRESENTATIVES (المناديب)
+// ============================================================
+
+model SalesRep {
+  id            String    @id @default(cuid())
+  userId        String    @unique
+  employeeCode  String    @unique
+  name          String
+  phone         String?
+  governorateId String?   // primary assigned governorate
+  monthlyTarget Decimal   @default(0) @db.Decimal(14, 2)
+  baseSalary    Decimal   @default(0) @db.Decimal(12, 2)
+  isActive      Boolean   @default(true)
+  hiredAt       DateTime?
+  createdAt     DateTime  @default(now())
+  updatedAt     DateTime  @updatedAt
+
+  // Relations
+  user               User               @relation(fields: [userId], references: [id])
+  governorate        Governorate?       @relation(fields: [governorateId], references: [id])
+  assignedPharmacies RepPharmacy[]
+  inventory          RepInventory[]
+  invoices           Invoice[]
+  stockMovements     StockMovement[]
+  targetPeriods      RepTargetPeriod[]
+  bonuses            RepBonus[]
+  deductions         RepDeduction[]
+  dailyReports       RepDailyReport[]
+  alerts             Alert[]
+
+  @@map("sales_reps")
+}
+
+/// Pharmacies assigned to a sales rep
+model RepPharmacy {
+  id          String   @id @default(cuid())
+  salesRepId  String
+  pharmacyId  String
+  assignedAt  DateTime @default(now())
+  isActive    Boolean  @default(true)
+
+  // Relations
+  salesRep    SalesRep  @relation(fields: [salesRepId], references: [id])
+  pharmacy    Pharmacy  @relation(fields: [pharmacyId], references: [id])
+
+  @@unique([salesRepId, pharmacyId])
+  @@map("rep_pharmacies")
+}
+
+/// Tracks monthly target attainment per rep
+model RepTargetPeriod {
+  id           String   @id @default(cuid())
+  salesRepId   String
+  periodYear   Int
+  periodMonth  Int
+  target       Decimal  @db.Decimal(14, 2)
+  achieved     Decimal  @default(0) @db.Decimal(14, 2)
+  alertSent    Boolean  @default(false)
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  // Relations
+  salesRep     SalesRep @relation(fields: [salesRepId], references: [id])
+
+  @@unique([salesRepId, periodYear, periodMonth])
+  @@map("rep_target_periods")
+}
+
+/// Stock batch issued to a sales rep from a warehouse
+model RepInventory {
+  id          String    @id @default(cuid())
+  salesRepId  String
+  warehouseId String    // the warehouse that issued this stock
+  issuedAt    DateTime  @default(now())
+  closedAt    DateTime?
+  notes       String?
+
+  // Relations
+  salesRep    SalesRep          @relation(fields: [salesRepId], references: [id])
+  warehouse   Warehouse         @relation(fields: [warehouseId], references: [id])
+  items       RepInventoryItem[]
+
+  @@map("rep_inventories")
+}
+
+model RepInventoryItem {
+  id             String       @id @default(cuid())
+  repInventoryId String
+  productId      String
+  issuedQty      Int          // originally issued
+  soldQty        Int          @default(0)
+  returnedQty    Int          @default(0)
+  currentQty     Int          // issuedQty - soldQty - returnedQty
+
+  // Relations
+  repInventory   RepInventory @relation(fields: [repInventoryId], references: [id], onDelete: Cascade)
+  product        Product      @relation(fields: [productId], references: [id])
+
+  @@unique([repInventoryId, productId])
+  @@map("rep_inventory_items")
+}
+
+model RepBonus {
+  id          String   @id @default(cuid())
+  salesRepId  String
+  amount      Decimal  @db.Decimal(12, 2)
+  reason      String?
+  periodYear  Int
+  periodMonth Int
+  appliedAt   DateTime @default(now())
+
+  // Relations
+  salesRep    SalesRep     @relation(fields: [salesRepId], references: [id])
+  transaction Transaction?
+
+  @@map("rep_bonuses")
+}
+
+model RepDeduction {
+  id          String   @id @default(cuid())
+  salesRepId  String
+  amount      Decimal  @db.Decimal(12, 2)
+  reason      String?
+  periodYear  Int
+  periodMonth Int
+  appliedAt   DateTime @default(now())
+
+  // Relations
+  salesRep    SalesRep     @relation(fields: [salesRepId], references: [id])
+  transaction Transaction?
+
+  @@map("rep_deductions")
+}
+
+// ============================================================
+// APP CONFIGURATION
+// ============================================================
+
+/// Global settings — intended as a single-row config table
+model AppSettings {
+  id                String   @id @default(cuid())
+  defaultCreditDays Int      @default(30)                   // global credit duration in days
+  lowStockThreshold Int      @default(10)                   // fallback reorder level
+  companyName       String   @default("Kapy Pharma")
+  companyAddress    String?
+  companyPhone      String?
+  companyTaxNumber  String?
+  createdAt         DateTime @default(now())
+  updatedAt         DateTime @updatedAt
+
+  @@map("app_settings")
+}
+
+// ============================================================
+// INVOICES & PAYMENTS (الفواتير والمدفوعات)
+// ============================================================
+
+model Invoice {
+  id              String        @id @default(cuid())
+  invoiceNumber   String        @unique   // e.g., "INV-2025-00001"
+  type            InvoiceType
+  status          InvoiceStatus @default(DRAFT)
+  pharmacyId      String
+  salesRepId      String
+  invoiceDate     DateTime      @default(now())
+  dueDate         DateTime?     // populated for CREDIT invoices
+  creditDays      Int?          // snapshot of credit duration at invoice time
+  subtotal        Decimal       @db.Decimal(14, 2)
+  discountAmount  Decimal       @default(0) @db.Decimal(14, 2)
+  vatAmount       Decimal       @default(0) @db.Decimal(14, 2)
+  total           Decimal       @db.Decimal(14, 2)
+  paidAmount      Decimal       @default(0) @db.Decimal(14, 2)
+  remainingAmount Decimal       @db.Decimal(14, 2)
+  notes           String?
+  overdueSentAt   DateTime?     // when the overdue alert was triggered
+  createdAt       DateTime      @default(now())
+  updatedAt       DateTime      @updatedAt
+
+  // Relations
+  pharmacy        Pharmacy      @relation(fields: [pharmacyId], references: [id])
+  salesRep        SalesRep      @relation(fields: [salesRepId], references: [id])
+  items           InvoiceItem[]
+  payments        Payment[]
+  returns         Return[]
+  alerts          Alert[]
+
+  @@index([pharmacyId])
+  @@index([salesRepId])
+  @@index([status])
+  @@index([dueDate])
+  @@map("invoices")
+}
+
+model InvoiceItem {
+  id          String   @id @default(cuid())
+  invoiceId   String
+  productId   String
+  quantity    Int
+  unitPrice   Decimal  @db.Decimal(12, 2)  // price snapshot at invoice time
+  discount    Decimal  @default(0) @db.Decimal(12, 2) // per-unit discount
+  vatRate     Decimal  @default(0) @db.Decimal(5, 2)
+  lineTotal   Decimal  @db.Decimal(14, 2)
+
+  // Relations
+  invoice     Invoice  @relation(fields: [invoiceId], references: [id], onDelete: Cascade)
+  product     Product  @relation(fields: [productId], references: [id])
+
+  @@map("invoice_items")
+}
+
+model Payment {
+  id           String        @id @default(cuid())
+  invoiceId    String
+  pharmacyId   String
+  amount       Decimal       @db.Decimal(14, 2)
+  method       PaymentMethod
+  referenceNo  String?       // check number / bank reference
+  paidAt       DateTime      @default(now())
+  notes        String?
+  createdAt    DateTime      @default(now())
+
+  // Relations
+  invoice      Invoice       @relation(fields: [invoiceId], references: [id])
+  pharmacy     Pharmacy      @relation(fields: [pharmacyId], references: [id])
+  transaction  Transaction?
+
+  @@index([invoiceId])
+  @@map("payments")
+}
+
+// ============================================================
+// RETURNS (المرتجعات)
+// ============================================================
+
+model Return {
+  id           String   @id @default(cuid())
+  returnNumber String   @unique
+  invoiceId    String
+  pharmacyId   String
+  returnDate   DateTime @default(now())
+  reason       String?
+  totalAmount  Decimal  @db.Decimal(14, 2)
+  notes        String?
+  createdAt    DateTime @default(now())
+
+  // Relations
+  invoice      Invoice      @relation(fields: [invoiceId], references: [id])
+  pharmacy     Pharmacy     @relation(fields: [pharmacyId], references: [id])
+  items        ReturnItem[]
+  transaction  Transaction?
+
+  @@map("returns")
+}
+
+model ReturnItem {
+  id        String   @id @default(cuid())
+  returnId  String
+  productId String
+  quantity  Int
+  unitPrice Decimal  @db.Decimal(12, 2)
+  lineTotal Decimal  @db.Decimal(14, 2)
+
+  // Relations
+  return    Return   @relation(fields: [returnId], references: [id], onDelete: Cascade)
+
+  @@map("return_items")
+}
+
+// ============================================================
+// TREASURY / SAFE (الخزينة)
+// ============================================================
+
+model Treasury {
+  id             String   @id @default(cuid())
+  name           String   @default("الخزينة الرئيسية")
+  currentBalance Decimal  @default(0) @db.Decimal(16, 2)
+  currency       String   @default("EGP")
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+
+  // Relations
+  transactions   Transaction[]
+
+  @@map("treasuries")
+}
+
+/// Immutable financial ledger entry — never update, only insert
+model Transaction {
+  id             String              @id @default(cuid())
+  treasuryId     String
+  type           TransactionType
+  category       TransactionCategory
+  amount         Decimal             @db.Decimal(14, 2)
+  balanceAfter   Decimal             @db.Decimal(16, 2) // running balance snapshot
+  description    String?
+  referenceNo    String?
+  transactedAt   DateTime            @default(now())
+  createdAt      DateTime            @default(now())
+
+  // Optional FK references (only one set per transaction)
+  paymentId      String?  @unique
+  returnId       String?  @unique
+  supplierId     String?
+  repBonusId     String?  @unique
+  repDeductionId String?  @unique
+
+  // Relations
+  treasury       Treasury      @relation(fields: [treasuryId], references: [id])
+  payment        Payment?      @relation(fields: [paymentId], references: [id])
+  return         Return?       @relation(fields: [returnId], references: [id])
+  supplier       Supplier?     @relation(fields: [supplierId], references: [id])
+  repBonus       RepBonus?     @relation(fields: [repBonusId], references: [id])
+  repDeduction   RepDeduction? @relation(fields: [repDeductionId], references: [id])
+
+  @@index([treasuryId])
+  @@index([type])
+  @@index([transactedAt])
+  @@map("transactions")
+}
+
+// ============================================================
+// DAILY REPORTS (التقارير اليومية)
+// ============================================================
+
+/// Aggregated daily summary — one record per rep per day
+model RepDailyReport {
+  id                String   @id @default(cuid())
+  salesRepId        String
+  reportDate        DateTime @db.Date
+  visitedPharmacies Int      @default(0)
+  invoiceCount      Int      @default(0)
+  totalSales        Decimal  @default(0) @db.Decimal(14, 2)
+  cashCollected     Decimal  @default(0) @db.Decimal(14, 2)
+  creditIssued      Decimal  @default(0) @db.Decimal(14, 2)
+  returnAmount      Decimal  @default(0) @db.Decimal(14, 2)
+  netSales          Decimal  @default(0) @db.Decimal(14, 2) // totalSales - returnAmount
+  notes             String?
+  createdAt         DateTime @default(now())
+  updatedAt         DateTime @updatedAt
+
+  // Relations
+  salesRep          SalesRep      @relation(fields: [salesRepId], references: [id])
+  visitLogs         RepVisitLog[]
+
+  @@unique([salesRepId, reportDate])
+  @@index([reportDate])
+  @@map("rep_daily_reports")
+}
+
+/// Individual pharmacy visit entry within a daily report
+model RepVisitLog {
+  id            String   @id @default(cuid())
+  dailyReportId String
+  pharmacyId    String
+  visitedAt     DateTime @default(now())
+  invoiceCount  Int      @default(0)
+  invoiceTotal  Decimal  @default(0) @db.Decimal(14, 2)
+  notes         String?
+
+  // Relations
+  dailyReport   RepDailyReport @relation(fields: [dailyReportId], references: [id], onDelete: Cascade)
+
+  @@map("rep_visit_logs")
+}
+
+// ============================================================
+// ALERTS / NOTIFICATIONS (التنبيهات)
+// ============================================================
+
+model Alert {
+  id          String      @id @default(cuid())
+  type        AlertType
+  status      AlertStatus @default(UNREAD)
+  title       String
+  message     String
+  triggeredAt DateTime    @default(now())
+  readAt      DateTime?
+
+  // Context FKs — only the relevant ones are populated per alert type
+  pharmacyId  String?
+  salesRepId  String?
+  invoiceId   String?
+  userId      String?     // the user who should receive this alert
+
+  // Relations
+  pharmacy    Pharmacy? @relation(fields: [pharmacyId], references: [id])
+  salesRep    SalesRep? @relation(fields: [salesRepId], references: [id])
+  invoice     Invoice?  @relation(fields: [invoiceId], references: [id])
+  user        User?     @relation(fields: [userId], references: [id])
+
+  @@index([status])
+  @@index([type])
+  @@index([triggeredAt])
+  @@map("alerts")
+}

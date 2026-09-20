@@ -1,0 +1,459 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* ============================================================
+   KAPY PHARMA — PREMIUM DESIGN SYSTEM v2.0
+   ============================================================ */
+
+@layer base {
+  :root {
+    /* ── Core Palette (Light Mode) ─────────────────────────── */
+    --background:       218 28% 96%;
+    --foreground:       222 47% 11%;
+
+    --card:             0 0% 100%;
+    --card-foreground:  222 47% 11%;
+
+    --popover:          0 0% 100%;
+    --popover-foreground: 222 47% 11%;
+
+    /* Brand: Kapy Pharma Medical Blue */
+    --primary:          212 82% 42%;
+    --primary-foreground: 0 0% 100%;
+
+    --secondary:        210 22% 92%;
+    --secondary-foreground: 222 47% 20%;
+
+    --muted:            212 20% 94%;
+    --muted-foreground: 215 18% 50%;
+
+    /* Teal accent — for highlights and success indicators */
+    --accent:           172 72% 38%;
+    --accent-foreground: 0 0% 100%;
+
+    --destructive:      4 86% 58%;
+    --destructive-foreground: 0 0% 100%;
+
+    --border:           214 24% 87%;
+    --input:            214 24% 87%;
+    --ring:             212 82% 42%;
+
+    /* ── Border Radius Tokens ────────────────────────────────── */
+    --radius:    0.75rem;   /* 12px — rounded-lg */
+    --radius-xl: 1rem;      /* 16px — rounded-xl */
+    --radius-2xl: 1.5rem;   /* 24px — rounded-2xl */
+
+    /* ── Sidebar ───────────────────────────────────────────── */
+    --sidebar-background:         222 45% 12%;
+    --sidebar-foreground:         210 22% 86%;
+    --sidebar-primary:            212 82% 54%;
+    --sidebar-primary-foreground: 0 0% 100%;
+    --sidebar-accent:             222 38% 19%;
+    --sidebar-accent-foreground:  210 22% 94%;
+    --sidebar-border:             222 38% 17%;
+    --sidebar-ring:               212 82% 60%;
+
+    /* ── Semantic Status Colors ────────────────────────────── */
+    --success:          152 60% 33%;
+    --success-light:    152 60% 95%;
+    --success-border:   152 60% 82%;
+    --warning:          38 92% 48%;
+    --warning-light:    38 92% 95%;
+    --warning-border:   38 92% 76%;
+    --error:            4 86% 58%;
+    --error-light:      4 86% 96%;
+    --error-border:     4 86% 84%;
+    --info:             212 82% 42%;
+    --info-light:       212 82% 96%;
+    --info-border:      212 82% 78%;
+
+    /* ── Shadow Scale (uses brand blue for depth perception) ── */
+    --shadow-xs:   0 1px 2px 0 hsl(222 47% 11% / 0.05);
+    --shadow-sm:   0 1px 3px 0 hsl(222 47% 11% / 0.08), 0 1px 2px -1px hsl(222 47% 11% / 0.05);
+    --shadow-md:   0 4px 6px -1px hsl(222 47% 11% / 0.08), 0 2px 4px -2px hsl(222 47% 11% / 0.05);
+    --shadow-lg:   0 10px 15px -3px hsl(222 47% 11% / 0.09), 0 4px 6px -4px hsl(222 47% 11% / 0.05);
+    --shadow-card: 0 1px 3px 0 hsl(222 47% 11% / 0.07), 0 1px 2px -1px hsl(222 47% 11% / 0.04);
+    --shadow-card-hover: 0 8px 24px -4px hsl(212 82% 42% / 0.14), 0 2px 8px -2px hsl(222 47% 11% / 0.06);
+    --shadow-sidebar: 4px 0 24px 0 hsl(222 47% 5% / 0.25);
+    --shadow-primary: 0 4px 14px 0 hsl(212 82% 42% / 0.30);
+  }
+
+  .dark {
+    --background:       222 47% 9%;
+    --foreground:       210 22% 94%;
+
+    --card:             222 40% 13%;
+    --card-foreground:  210 22% 94%;
+
+    --popover:          222 40% 13%;
+    --popover-foreground: 210 22% 94%;
+
+    --primary:          212 82% 56%;
+    --primary-foreground: 0 0% 100%;
+
+    --secondary:        222 40% 19%;
+    --secondary-foreground: 210 22% 84%;
+
+    --muted:            222 40% 16%;
+    --muted-foreground: 215 18% 60%;
+
+    --accent:           172 72% 46%;
+    --accent-foreground: 0 0% 100%;
+
+    --destructive:      4 72% 52%;
+    --destructive-foreground: 0 0% 100%;
+
+    --border:           222 40% 21%;
+    --input:            222 40% 19%;
+    --ring:             212 82% 56%;
+
+    --sidebar-background:         222 47% 7%;
+    --sidebar-foreground:         210 22% 84%;
+    --sidebar-primary:            212 82% 56%;
+    --sidebar-primary-foreground: 0 0% 100%;
+    --sidebar-accent:             222 40% 14%;
+    --sidebar-accent-foreground:  210 22% 90%;
+    --sidebar-border:             222 40% 12%;
+    --sidebar-ring:               212 82% 62%;
+
+    --shadow-card: 0 1px 3px 0 hsl(0 0% 0% / 0.25), 0 1px 2px -1px hsl(0 0% 0% / 0.15);
+    --shadow-card-hover: 0 8px 24px -4px hsl(212 82% 56% / 0.18), 0 2px 8px -2px hsl(0 0% 0% / 0.20);
+  }
+}
+
+@layer base {
+  * {
+    @apply border-border;
+  }
+
+  html {
+    scroll-behavior: smooth;
+  }
+
+  body {
+    @apply bg-background text-foreground antialiased;
+    font-family: var(--font-tajawal), "Segoe UI", Tahoma, Arial, ui-sans-serif, system-ui, sans-serif;
+    font-feature-settings: "rlig" 1, "calt" 1;
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+  }
+
+  /* RTL — ensure Tajawal is the primary font everywhere */
+  [dir="rtl"], [dir="rtl"] * {
+    font-family: var(--font-tajawal), "Segoe UI", Tahoma, Arial, ui-sans-serif, system-ui, sans-serif;
+  }
+
+  /* Sharper headings */
+  h1, h2, h3, h4, h5, h6 {
+    font-weight: 700;
+    letter-spacing: -0.01em;
+  }
+
+  /* Better number rendering in tables */
+  .tabular-nums, table td, table th {
+    font-variant-numeric: tabular-nums;
+  }
+
+  /* ── Custom Scrollbar ────────────────────────────────────── */
+  ::-webkit-scrollbar {
+    width: 5px;
+    height: 5px;
+  }
+  ::-webkit-scrollbar-track {
+    @apply bg-transparent;
+  }
+  ::-webkit-scrollbar-thumb {
+    @apply bg-muted-foreground/20 rounded-full;
+  }
+  ::-webkit-scrollbar-thumb:hover {
+    @apply bg-muted-foreground/40;
+  }
+  ::-webkit-scrollbar-corner {
+    background: transparent;
+  }
+}
+
+@layer components {
+
+  /* ── Glassmorphism Card ─────────────────────────────────── */
+  .glass-card {
+    @apply bg-card/80 backdrop-blur-md border border-white/10 rounded-xl;
+    box-shadow: var(--shadow-md);
+  }
+
+  /* ── Stat / KPI Card ─────────────────────────────────────── */
+  .stat-card {
+    @apply bg-card border border-border rounded-xl p-5 relative overflow-hidden;
+    box-shadow: var(--shadow-card);
+    transition:
+      transform 0.24s cubic-bezier(0.16, 1, 0.3, 1),
+      box-shadow 0.24s cubic-bezier(0.16, 1, 0.3, 1),
+      border-color 0.2s ease;
+  }
+
+  /* Subtle gradient sheen in top-right corner */
+  .stat-card::before {
+    content: '';
+    position: absolute;
+    top: 0;
+    left: 0;
+    right: 0;
+    height: 2px;
+    background: linear-gradient(90deg, transparent, hsl(var(--primary) / 0.15), transparent);
+    border-radius: var(--radius) var(--radius) 0 0;
+    opacity: 0;
+    transition: opacity 0.2s ease;
+  }
+
+  .stat-card:hover {
+    transform: translateY(-3px);
+    border-color: hsl(var(--primary) / 0.30);
+    box-shadow: var(--shadow-card-hover);
+  }
+
+  .stat-card:hover::before {
+    opacity: 1;
+  }
+
+  /* ── Sidebar Nav Item ──────────────────────────────────────── */
+  .nav-item {
+    @apply flex items-center gap-3 px-3 py-2.5 rounded-xl text-sidebar-foreground/75 cursor-pointer text-[0.8375rem] font-medium w-full;
+    transition:
+      transform 0.18s cubic-bezier(0.16, 1, 0.3, 1),
+      background-color 0.16s ease,
+      color 0.16s ease,
+      box-shadow 0.16s ease;
+  }
+
+  .nav-item:hover {
+    @apply bg-sidebar-accent text-sidebar-accent-foreground;
+    transform: translateX(-2px); /* RTL inward pull */
+  }
+
+  .nav-item:active {
+    transform: scale(0.97) translateX(-1px);
+  }
+
+  .nav-item.active {
+    @apply bg-sidebar-accent text-sidebar-accent-foreground font-semibold;
+    box-shadow: inset 0 0 0 1px hsl(var(--sidebar-ring) / 0.18);
+    position: relative;
+  }
+
+  /* Active indicator — glowing right-side pill (RTL) */
+  .nav-item.active::before {
+    content: '';
+    position: absolute;
+    right: 0;
+    top: 18%;
+    bottom: 18%;
+    width: 3px;
+    border-radius: 3px 0 0 3px;
+    background: hsl(var(--sidebar-primary));
+    box-shadow: 0 0 10px hsl(var(--sidebar-primary) / 0.6);
+  }
+
+  /* ── Status Badges ─────────────────────────────────────────── */
+  .status-badge {
+    @apply inline-flex items-center px-2.5 py-0.5 rounded-full text-[11px] font-semibold border;
+  }
+  .status-paid      { @apply bg-emerald-50 text-emerald-700 border-emerald-200 dark:bg-emerald-950/30 dark:text-emerald-400 dark:border-emerald-800/50; }
+  .status-overdue   { @apply bg-red-50 text-red-700 border-red-200 dark:bg-red-950/30 dark:text-red-400 dark:border-red-800/50; }
+  .status-partial   { @apply bg-amber-50 text-amber-700 border-amber-200 dark:bg-amber-950/30 dark:text-amber-400 dark:border-amber-800/50; }
+  .status-draft     { @apply bg-slate-50 text-slate-600 border-slate-200 dark:bg-slate-800/40 dark:text-slate-400 dark:border-slate-700/50; }
+  .status-confirmed { @apply bg-blue-50 text-blue-700 border-blue-200 dark:bg-blue-950/30 dark:text-blue-400 dark:border-blue-800/50; }
+  .status-cancelled { @apply bg-slate-100 text-slate-500 border-slate-200 dark:bg-slate-800/30 dark:text-slate-500 dark:border-slate-700/40; }
+
+  /* ── Page Header ────────────────────────────────────────────── */
+  .page-header {
+    @apply flex items-start justify-between mb-7 gap-4 flex-wrap;
+  }
+
+  .page-title {
+    @apply text-[1.375rem] font-bold tracking-tight text-foreground leading-snug;
+  }
+
+  .page-subtitle {
+    @apply text-sm text-muted-foreground mt-0.5 leading-relaxed;
+  }
+
+  /* ── Section card wrapper ─────────────────────────────────── */
+  .section-card {
+    @apply bg-card border border-border rounded-xl overflow-hidden;
+    box-shadow: var(--shadow-card);
+  }
+
+  .section-card-header {
+    @apply flex items-center justify-between px-5 py-4 border-b border-border/60;
+  }
+
+  .section-card-title {
+    @apply font-semibold text-sm flex items-center gap-2 text-foreground;
+  }
+
+  /* ── Data Table Styles ──────────────────────────────────────── */
+  .data-table-wrapper {
+    @apply overflow-x-auto;
+  }
+
+  .data-table {
+    @apply w-full text-sm;
+  }
+
+  .data-table-header {
+    @apply bg-muted/40 border-b border-border/60 text-muted-foreground text-xs;
+  }
+
+  .data-table-header th {
+    @apply px-5 py-3.5 font-semibold tracking-wide text-right;
+  }
+
+  .data-table-row {
+    @apply border-b border-border/50 transition-colors duration-150;
+  }
+
+  .data-table-row:hover {
+    background-color: hsl(var(--primary) / 0.035);
+  }
+
+  .data-table-row:last-child {
+    @apply border-b-0;
+  }
+
+  .data-table-cell {
+    @apply px-5 py-3.5;
+  }
+
+  /* ── Form Input Enhancement ────────────────────────────────── */
+  .form-input {
+    @apply w-full px-4 py-2.5 text-sm rounded-xl bg-background border border-input;
+    @apply focus:outline-none focus:ring-2 focus:ring-primary/25 focus:border-primary/50;
+    @apply placeholder:text-muted-foreground/70;
+    transition: border-color 0.18s ease, box-shadow 0.18s ease;
+  }
+
+  /* ── Keyboard shortcut badge ───────────────────────────────── */
+  .kbd {
+    @apply inline-flex items-center px-1.5 py-0.5 rounded-md border border-border bg-muted text-muted-foreground text-[10px] font-mono font-medium;
+  }
+
+  /* ── Empty state ─────────────────────────────────────────────── */
+  .empty-state {
+    @apply flex flex-col items-center justify-center py-16 px-6 text-center text-muted-foreground;
+  }
+
+  .empty-state-icon {
+    @apply w-12 h-12 mb-3 opacity-20;
+  }
+
+  .empty-state-title {
+    @apply text-sm font-semibold text-foreground/80 mb-1;
+  }
+
+  .empty-state-desc {
+    @apply text-xs leading-relaxed max-w-xs;
+  }
+}
+
+/* ══════════════════════════════════════════════════════════════
+   KEYFRAMES & ANIMATIONS
+   ══════════════════════════════════════════════════════════════ */
+
+/* Smooth page entrance */
+@keyframes pageEnter {
+  from { opacity: 0; transform: translateY(8px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+
+.page-enter-animation {
+  animation: pageEnter 0.25s cubic-bezier(0.16, 1, 0.3, 1) forwards;
+  will-change: opacity, transform;
+}
+
+/* Staggered KPI card entrance */
+@keyframes cardEnter {
+  from { opacity: 0; transform: translateY(12px) scale(0.98); }
+  to   { opacity: 1; transform: translateY(0) scale(1); }
+}
+
+.card-enter-1 { animation: cardEnter 0.32s cubic-bezier(0.16, 1, 0.3, 1) 0.04s both; }
+.card-enter-2 { animation: cardEnter 0.32s cubic-bezier(0.16, 1, 0.3, 1) 0.10s both; }
+.card-enter-3 { animation: cardEnter 0.32s cubic-bezier(0.16, 1, 0.3, 1) 0.16s both; }
+.card-enter-4 { animation: cardEnter 0.32s cubic-bezier(0.16, 1, 0.3, 1) 0.22s both; }
+
+/* Shimmer skeleton loading */
+@keyframes shimmer {
+  from { background-position: -200% 0; }
+  to   { background-position: 200% 0; }
+}
+
+.skeleton {
+  background: linear-gradient(
+    90deg,
+    hsl(var(--muted)) 25%,
+    hsl(var(--muted-foreground) / 0.12) 50%,
+    hsl(var(--muted)) 75%
+  );
+  background-size: 200% 100%;
+  animation: shimmer 1.5s ease-in-out infinite;
+  border-radius: var(--radius);
+}
+
+/* Soft scale pulse for notification dots */
+@keyframes pulseSoft {
+  0%, 100% { transform: scale(1); opacity: 1; }
+  50%       { transform: scale(1.15); opacity: 0.8; }
+}
+
+.pulse-soft {
+  animation: pulseSoft 2s ease-in-out infinite;
+}
+
+/* ── Universal Interactive Micro-interactions ─────────────── */
+
+/* Button & clickable element transitions */
+button:not(:disabled),
+[role="button"]:not([aria-disabled="true"]),
+a[href],
+.interactive {
+  transition:
+    transform 0.12s cubic-bezier(0.16, 1, 0.3, 1),
+    box-shadow 0.15s ease,
+    background-color 0.15s ease,
+    border-color 0.15s ease,
+    color 0.15s ease,
+    opacity 0.15s ease;
+}
+
+button:active:not(:disabled),
+[role="button"]:active:not([aria-disabled="true"]),
+.interactive:active {
+  transform: scale(0.963);
+}
+
+/* Smooth input/select focus transitions */
+input, select, textarea {
+  transition: border-color 0.18s ease, box-shadow 0.18s ease, background-color 0.18s ease;
+}
+
+/* Input focus ring — more branded */
+input:focus-visible, select:focus-visible, textarea:focus-visible {
+  outline: none;
+  box-shadow: 0 0 0 3px hsl(var(--ring) / 0.20);
+  border-color: hsl(var(--ring) / 0.60);
+}
+
+/* Smooth theme transitions on structural elements */
+body, main, header, aside, nav,
+.bg-card, .bg-background, .bg-sidebar,
+.border-border, .border-sidebar-border {
+  transition: background-color 0.22s ease, border-color 0.22s ease, box-shadow 0.22s ease;
+}
+
+/* ── Focus visible improvements (keyboard nav) ─────────────── */
+:focus-visible {
+  outline: 2px solid hsl(var(--ring) / 0.70);
+  outline-offset: 2px;
+  border-radius: calc(var(--radius) - 2px);
+}
