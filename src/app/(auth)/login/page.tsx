@@ -95,10 +95,10 @@ function LoginForm() {
               type="email"
               autoComplete="email"
               placeholder="admin@kapypharma.com"
-              className={`w-full px-4 py-2.5 rounded-xl bg-white/8 border text-white placeholder:text-white/30
+              className={`w-full px-4 py-2.5 rounded-xl bg-white border text-gray-900 placeholder:text-gray-400
                 focus:outline-none focus:ring-2 focus:ring-blue-500/50 focus:border-blue-500/50
                 transition-all duration-200 text-sm
-                ${errors.email ? "border-red-500/50" : "border-white/15"}`}
+                ${errors.email ? "border-red-500/50" : "border-gray-200"}`}
               {...register("email")}
             />
             {errors.email && (
@@ -117,16 +117,16 @@ function LoginForm() {
                 type={showPassword ? "text" : "password"}
                 autoComplete="current-password"
                 placeholder="••••••••"
-                className={`w-full px-4 py-2.5 pr-11 rounded-xl bg-white/8 border text-white placeholder:text-white/30
+                className={`w-full px-4 py-2.5 pr-11 rounded-xl bg-white border text-gray-900 placeholder:text-gray-400
                   focus:outline-none focus:ring-2 focus:ring-blue-500/50 focus:border-blue-500/50
                   transition-all duration-200 text-sm
-                  ${errors.password ? "border-red-500/50" : "border-white/15"}`}
+                  ${errors.password ? "border-red-500/50" : "border-gray-200"}`}
                 {...register("password")}
               />
               <button
                 type="button"
                 onClick={() => setShowPassword((p) => !p)}
-                className="absolute left-3 top-1/2 -translate-y-1/2 text-white/40 hover:text-white/70 transition-colors"
+                className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-400 hover:text-gray-600 transition-colors"
                 aria-label={showPassword ? "إخفاء كلمة المرور" : "إظهار كلمة المرور"}
               >
                 {showPassword ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
