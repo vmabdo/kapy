@@ -7,6 +7,7 @@ export async function getPharmacies(filters?: { governorateId?: string; salesRep
 
   return prisma.pharmacy.findMany({
     where: {
+      clientType: "PHARMACY",
       ...(governorateId && { governorateId }),
       ...(salesRepId && { assignedReps: { some: { salesRepId } } }),
     },
@@ -48,8 +49,8 @@ export async function getPharmacyStats() {
   const month = now.getMonth() + 1;
 
   const [totalPharmacies, totalCredit, topPerformers] = await Promise.all([
-    prisma.pharmacy.count(),
-    prisma.pharmacy.aggregate({ _sum: { currentBalance: true } }),
+    prisma.pharmacy.count({ where: { clientType: "PHARMACY" } }),
+    prisma.pharmacy.aggregate({ where: { clientType: "PHARMACY" }, _sum: { currentBalance: true } }),
     // Get pharmacies closest to hitting their target this month
     prisma.pharmacyTargetPeriod.findMany({
       where: {

@@ -2,13 +2,15 @@ import type { Metadata } from "next";
 import Link from "next/link";
 import { notFound } from "next/navigation";
 import { getSalesRepById } from "@/queries/sales";
+import { getAllProducts } from "@/queries/inventory";
 import { prisma } from "@/lib/prisma";
 import { formatCurrency, formatDate, cn } from "@/lib/utils";
 import {
   Users, ArrowRight, Phone, MapPin, Calendar, Target,
-  TrendingUp, FileText, Gift, Minus, DollarSign, AlertTriangle,
+  TrendingUp, FileText, Gift, Minus, DollarSign, AlertTriangle, Package,
 } from "lucide-react";
 import { BonusDeductionForms } from "./bonus-deduction-forms";
+import { RepMonthlyTargetForm } from "@/components/sales/rep-monthly-target-form";
 
 export const dynamic = "force-dynamic";
 
@@ -26,7 +28,7 @@ export default async function RepDetailPage({ params }: { params: { id: string }
   const currentMonth = now.getMonth() + 1;
 
   // Financial data for current month
-  const [monthInvoices, bonuses, deductions, targetPeriod] = await Promise.all([
+  const [monthInvoices, bonuses, deductions, targetPeriod, repMonthlyTarget, allProducts] = await Promise.all([
     prisma.invoice.aggregate({
       where: {
         salesRepId: rep.id,
@@ -48,6 +50,11 @@ export default async function RepDetailPage({ params }: { params: { id: string }
     prisma.repTargetPeriod.findFirst({
       where: { salesRepId: rep.id, periodYear: currentYear, periodMonth: currentMonth },
     }),
+    prisma.repMonthlyTarget.findUnique({
+      where: { salesRepId_month_year: { salesRepId: rep.id, month: currentMonth, year: currentYear } },
+      include: { items: { include: { product: { select: { id: true, name: true, sku: true, unit: true } } } } },
+    }),
+    getAllProducts(),
   ]);
 
   const monthSales = Number(monthInvoices._sum.total ?? 0);
@@ -188,6 +195,84 @@ export default async function RepDetailPage({ params }: { params: { id: string }
             لم يُحدَّد هدف شهري لهذا المندوب
           </p>
         )}
+      </div>
+
+      {/* ─── Monthly Product Targets Management ──────────────── */}
+      <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+        {/* Set Targets Form */}
+        <div className="section-card p-5">
+          <h2 className="font-semibold text-sm flex items-center gap-2 mb-5">
+            <Package className="w-4 h-4 text-primary" />
+            تحديد أهداف المنتجات الشهرية
+          </h2>
+          <RepMonthlyTargetForm
+            salesRepId={rep.id}
+            products={allProducts.map(p => ({ id: p.id, name: p.name, sku: p.sku, unit: p.unit }))}
+            existingTarget={repMonthlyTarget ? {
+              id: repMonthlyTarget.id,
+              month: repMonthlyTarget.month,
+              year: repMonthlyTarget.year,
+              notes: repMonthlyTarget.notes,
+              items: repMonthlyTarget.items.map(i => ({
+                productId: i.productId,
+                targetQuantity: i.targetQuantity,
+                achievedQuantity: i.achievedQuantity,
+              })),
+            } : null}
+          />
+        </div>
+
+        {/* Current Month Target Progress */}
+        <div className="section-card p-5">
+          <h2 className="font-semibold text-sm flex items-center gap-2 mb-5">
+            <Target className="w-4 h-4 text-primary" />
+            إنجاز أهداف المنتجات — {now.toLocaleDateString("ar-EG", { month: "long", year: "numeric" })}
+          </h2>
+          {repMonthlyTarget && repMonthlyTarget.items.length > 0 ? (
+            <div className="space-y-3">
+              {repMonthlyTarget.items.map((item) => {
+                const pct = item.targetQuantity > 0
+                  ? Math.min((item.achievedQuantity / item.targetQuantity) * 100, 100)
+                  : 0;
+                const color =
+                  pct >= 100 ? "bg-emerald-500" :
+                  pct >= 70  ? "bg-blue-500" :
+                  pct >= 40  ? "bg-amber-500" : "bg-red-500";
+                return (
+                  <div key={item.id} className="p-3 rounded-xl border border-border/50 bg-muted/20">
+                    <div className="flex justify-between items-center mb-2">
+                      <div>
+                        <p className="font-medium text-sm text-foreground">{item.product.name}</p>
+                        <p className="text-[11px] text-muted-foreground font-mono">{item.product.sku}</p>
+                      </div>
+                      <span className={cn(
+                        "text-xs font-bold px-2 py-0.5 rounded-full",
+                        pct >= 100 ? "bg-emerald-100 text-emerald-700" :
+                        pct >= 70  ? "bg-blue-100 text-blue-700" :
+                        pct >= 40  ? "bg-amber-100 text-amber-700" : "bg-red-100 text-red-700"
+                      )}>
+                        {Math.round(pct)}%
+                      </span>
+                    </div>
+                    <div className="flex items-center gap-2">
+                      <div className="flex-1 h-2 bg-muted rounded-full overflow-hidden">
+                        <div className={`h-full rounded-full transition-all duration-500 ${color}`} style={{ width: `${pct}%` }} />
+                      </div>
+                      <span className="text-xs text-muted-foreground whitespace-nowrap tabular-nums">
+                        {item.achievedQuantity} / {item.targetQuantity} {item.product.unit}
+                      </span>
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          ) : (
+            <div className="text-center py-8 text-muted-foreground">
+              <Package className="w-10 h-10 mx-auto mb-3 opacity-25" />
+              <p className="text-sm">لم يتم تحديد أهداف منتجات لهذا الشهر بعد</p>
+            </div>
+          )}
+        </div>
       </div>
 
       {/* Main content grid */}

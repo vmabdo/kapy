@@ -10,10 +10,33 @@ export async function getInvoices(filters?: {
   pharmacyId?: string;
   from?: Date;
   to?: Date;
+  query?: string;
   take?: number;
   skip?: number;
 }) {
-  const { status, type, salesRepId, pharmacyId, from, to, take = 50, skip = 0 } = filters ?? {};
+  const { status, type, salesRepId, pharmacyId, from, to, query, take = 50, skip = 0 } = filters ?? {};
+
+  // Build date range filter
+  const invoiceDateFilter =
+    from || to
+      ? {
+          invoiceDate: {
+            ...(from ? { gte: from } : {}),
+            ...(to ? { lte: to } : {}),
+          },
+        }
+      : {};
+
+  // Build text search filter
+  const searchFilter = query
+    ? {
+        OR: [
+          { invoiceNumber: { contains: query, mode: "insensitive" as const } },
+          { pharmacy: { name: { contains: query, mode: "insensitive" as const } } },
+          { salesRep: { name: { contains: query, mode: "insensitive" as const } } },
+        ],
+      }
+    : {};
 
   return prisma.invoice.findMany({
     where: {
@@ -21,8 +44,8 @@ export async function getInvoices(filters?: {
       ...(type && { type }),
       ...(salesRepId && { salesRepId }),
       ...(pharmacyId && { pharmacyId }),
-      ...(from && { invoiceDate: { gte: from } }),
-      ...(to && { invoiceDate: { lte: to } }),
+      ...invoiceDateFilter,
+      ...searchFilter,
     },
     include: {
       pharmacy: { select: { name: true, governorate: { select: { name: true } } } },
@@ -42,12 +65,17 @@ export async function getInvoiceById(id: string) {
       pharmacy: { include: { governorate: true } },
       salesRep: true,
       items: {
-        include: { product: { select: { name: true, sku: true, unit: true } } },
+        include: {
+          product: { select: { name: true, sku: true, unit: true } },
+        },
       },
-      payments: { orderBy: { paidAt: "desc" } },
+      payments: { orderBy: { paidAt: "desc" }, include: { paymentItems: true } },
+      returns: { include: { items: true } },
     },
   });
 }
+
+
 
 // ─── Sales Reps ───────────────────────────────────────────────
 

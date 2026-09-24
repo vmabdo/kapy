@@ -2,6 +2,7 @@
 
 import { Bell, Search, Sun, Moon, CheckCheck, AlertTriangle, TrendingUp, Package, Clock } from "lucide-react";
 import { useState, useEffect, useCallback } from "react";
+import { useRouter, usePathname, useSearchParams } from "next/navigation";
 import { UserRole } from "@prisma/client";
 import { cn } from "@/lib/utils";
 import { formatDate } from "@/lib/utils";
@@ -56,6 +57,27 @@ export function TopBar({ user }: TopBarProps) {
   const [alertCount, setAlertCount] = useState(0);
   const [loadingAlerts, setLoadingAlerts] = useState(false);
   const [markingRead, setMarkingRead] = useState(false);
+
+  const router = useRouter();
+  const pathname = usePathname();
+  const searchParams = useSearchParams();
+  const [query, setQuery] = useState(searchParams.get("query") || "");
+
+  // ── Debounced URL Search ───────────────────────────────────
+  useEffect(() => {
+    const timeout = setTimeout(() => {
+      const params = new URLSearchParams(searchParams.toString());
+      if (query) {
+        params.set("query", query);
+      } else {
+        params.delete("query");
+      }
+      if (params.get("query") !== searchParams.get("query")) {
+        router.push(`${pathname}?${params.toString()}`);
+      }
+    }, 300);
+    return () => clearTimeout(timeout);
+  }, [query, pathname, router, searchParams]);
 
   // ── Theme toggle with localStorage persistence ─────────────
   useEffect(() => {
@@ -137,6 +159,8 @@ export function TopBar({ user }: TopBarProps) {
           type="search"
           placeholder="بحث سريع في النظام..."
           id="topbar-search"
+          value={query}
+          onChange={(e) => setQuery(e.target.value)}
           className={cn(
             "w-full pr-10 pl-4 py-2 text-sm rounded-xl",
             "bg-muted/60 border border-border/60",

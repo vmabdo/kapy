@@ -1,9 +1,12 @@
 import type { Metadata } from "next";
 import Link from "next/link";
-import { getInvoices, getSalesStats } from "@/queries/sales";
-import { ShoppingCart, Plus, Filter, FileText, ArrowRight, TrendingUp, AlertTriangle } from "lucide-react";
+import { getInvoices, getSalesStats, getAllSalesReps } from "@/queries/sales";
+import { prisma } from "@/lib/prisma";
+import { ShoppingCart, Plus, Filter, FileText, ArrowRight, TrendingUp, AlertTriangle, X } from "lucide-react";
 import { formatCurrency, formatDate, cn } from "@/lib/utils";
 import { InvoiceStatus, InvoiceType } from "@prisma/client";
+import { SalesFilters } from "@/components/sales/sales-filters";
+import { SalesSearch } from "@/components/sales/sales-search";
 
 export const metadata: Metadata = { title: "المبيعات والفواتير" };
 export const dynamic = "force-dynamic";
@@ -22,13 +25,49 @@ const TYPE_LABELS: Record<InvoiceType, string> = {
   CREDIT: "آجل",
 };
 
-export default async function SalesPage() {
-  const [invoices, stats] = await Promise.all([
-    getInvoices({ take: 50 }),
+interface PageProps {
+  searchParams: {
+    status?: string;
+    type?: string;
+    repId?: string;
+    clientId?: string;
+    from?: string;
+    to?: string;
+    query?: string;
+  };
+}
+
+export default async function SalesPage({ searchParams }: PageProps) {
+  // Parse filters from URL search params
+  const filters = {
+    status: Object.values(InvoiceStatus).includes(searchParams.status as InvoiceStatus)
+      ? (searchParams.status as InvoiceStatus)
+      : undefined,
+    type: Object.values(InvoiceType).includes(searchParams.type as InvoiceType)
+      ? (searchParams.type as InvoiceType)
+      : undefined,
+    salesRepId: searchParams.repId || undefined,
+    pharmacyId: searchParams.clientId || undefined,
+    from: searchParams.from ? new Date(searchParams.from) : undefined,
+    to: searchParams.to ? new Date(searchParams.to + "T23:59:59") : undefined,
+    query: searchParams.query || undefined,
+    take: 100,
+  };
+
+  const [invoices, stats, salesReps, clients] = await Promise.all([
+    getInvoices(filters),
     getSalesStats(),
+    getAllSalesReps(),
+    prisma.pharmacy.findMany({
+      where: { isActive: true },
+      orderBy: { name: "asc" },
+    }),
   ]);
 
   const overdueCount = invoices.filter((i) => i.status === InvoiceStatus.OVERDUE).length;
+  const isFiltered = Object.values(filters).some(
+    (v) => v !== undefined && v !== 100
+  );
 
   return (
     <div>
@@ -42,10 +81,10 @@ export default async function SalesPage() {
         </div>
         <div className="flex gap-2">
           <Link
-            href="/dashboard/sales/reps"
+            href="/dashboard/sales-reps"
             className="flex items-center gap-2 px-4 py-2 rounded-xl border border-border text-sm font-medium hover:bg-muted transition-colors"
           >
-            المندوبين
+            المناديب
           </Link>
           <Link
             href="/dashboard/sales/new"
@@ -87,25 +126,50 @@ export default async function SalesPage() {
       </div>
 
       {/* Invoice Table */}
-      <div className="bg-card border border-border rounded-xl overflow-hidden">
+      <div className="bg-card border border-border rounded-xl">
         <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 px-5 py-4 border-b border-border/60">
           <h2 className="font-semibold flex items-center gap-2 text-sm">
             <FileText className="w-4 h-4 text-primary" />
-            أحدث الفواتير
+            الفواتير
+            {isFiltered && (
+              <span className="text-[11px] bg-primary/10 text-primary px-2 py-0.5 rounded-full font-medium">
+                مصفاة — {invoices.length} نتيجة
+              </span>
+            )}
           </h2>
-          <button className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg border border-border text-xs font-medium hover:bg-muted transition-colors">
-            <Filter className="w-3.5 h-3.5" />
-            تصفية
-          </button>
+          {/* Search & Filter Panel */}
+          <div className="flex items-center gap-3 w-full sm:w-auto justify-end">
+            <SalesSearch />
+            <SalesFilters
+              salesReps={salesReps.map(r => ({ id: r.id, name: r.name }))}
+              clients={clients.map(c => ({ id: c.id, name: c.name }))}
+              currentFilters={{
+                status: searchParams.status,
+                type: searchParams.type,
+                repId: searchParams.repId,
+                clientId: searchParams.clientId,
+                from: searchParams.from,
+                to: searchParams.to,
+              }}
+            />
+          </div>
         </div>
 
         {invoices.length === 0 ? (
           <div className="p-12 text-center text-muted-foreground">
             <FileText className="w-10 h-10 mx-auto mb-3 opacity-25" />
-            <p className="font-medium">لا توجد فواتير بعد</p>
-            <Link href="/dashboard/sales/new" className="mt-3 inline-flex items-center gap-1 text-sm text-primary hover:underline">
-              <Plus className="w-3.5 h-3.5" /> أنشئ فاتورة جديدة
-            </Link>
+            <p className="font-medium">
+              {isFiltered ? "لا توجد فواتير تطابق المرشحات المحددة" : "لا توجد فواتير بعد"}
+            </p>
+            {isFiltered ? (
+              <Link href="/dashboard/sales" className="mt-3 inline-flex items-center gap-1 text-sm text-primary hover:underline">
+                <X className="w-3.5 h-3.5" /> إزالة المرشحات
+              </Link>
+            ) : (
+              <Link href="/dashboard/sales/new" className="mt-3 inline-flex items-center gap-1 text-sm text-primary hover:underline">
+                <Plus className="w-3.5 h-3.5" /> أنشئ فاتورة جديدة
+              </Link>
+            )}
           </div>
         ) : (
           <div className="overflow-x-auto">
@@ -113,7 +177,7 @@ export default async function SalesPage() {
               <thead>
                 <tr className="bg-muted/40 border-b border-border/60">
                   <th className="text-right px-5 py-3 font-medium text-muted-foreground">رقم الفاتورة</th>
-                  <th className="text-right px-4 py-3 font-medium text-muted-foreground">الصيدلية / المندوب</th>
+                  <th className="text-right px-4 py-3 font-medium text-muted-foreground">العميل / المندوب</th>
                   <th className="text-center px-4 py-3 font-medium text-muted-foreground">النوع</th>
                   <th className="text-center px-4 py-3 font-medium text-muted-foreground">الإجمالي</th>
                   <th className="text-center px-4 py-3 font-medium text-muted-foreground">المتبقي</th>

@@ -17,6 +17,7 @@ import {
   ChevronLeft,
   Pill,
   Users,
+  FileText,
 } from "lucide-react";
 
 // ─── Navigation item definition ──────────────────────────────
@@ -77,6 +78,17 @@ const NAV_ITEMS: NavItem[] = [
     ],
   },
   {
+    label: "الشركات والمخازن",
+    href: "/dashboard/companies",
+    icon: <Building2 className="w-4 h-4" />,
+    allowedRoles: [
+      UserRole.SUPER_ADMIN,
+      UserRole.ADMIN,
+      UserRole.SALES_MANAGER,
+      UserRole.ACCOUNTANT,
+    ],
+  },
+  {
     label: "الخزينة",
     href: "/dashboard/treasury",
     icon: <Wallet className="w-4 h-4" />,
@@ -90,6 +102,16 @@ const NAV_ITEMS: NavItem[] = [
       UserRole.SUPER_ADMIN,
       UserRole.ADMIN,
       UserRole.SALES_MANAGER,
+      UserRole.ACCOUNTANT,
+    ],
+  },
+  {
+    label: "القوائم المالية",
+    href: "/dashboard/financial-statements",
+    icon: <FileText className="w-4 h-4" />,
+    allowedRoles: [
+      UserRole.SUPER_ADMIN,
+      UserRole.ADMIN,
       UserRole.ACCOUNTANT,
     ],
   },

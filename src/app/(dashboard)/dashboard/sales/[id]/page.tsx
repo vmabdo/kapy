@@ -2,6 +2,7 @@ import { notFound } from "next/navigation";
 import Link from "next/link";
 import { getInvoiceById } from "@/queries/sales";
 import { PaymentForm } from "@/components/sales/payment-form";
+import { ReturnForm } from "@/components/sales/return-form";
 import { PrintButton } from "./print-button";
 import { FileText, ArrowRight, Printer, CheckCircle2, AlertTriangle, Building2, User } from "lucide-react";
 import { formatCurrency, formatDate, cn } from "@/lib/utils";
@@ -33,6 +34,37 @@ export default async function InvoiceDetailPage({ params }: Props) {
   if (!invoice) notFound();
 
   const statusInfo = STATUS_LABELS[invoice.status];
+  const hasDiscount = Number(invoice.discountAmount) > 0;
+  // Pre-calculate net and pending quantities per item
+  const itemCalculations = invoice.items.reduce((acc: any, item) => {
+    const returnedQty = invoice.returns.reduce((sum: number, ret: any) => {
+      const returnItem = ret.items.find((i: any) => i.productId === item.productId);
+      return sum + (returnItem ? returnItem.quantity : 0);
+    }, 0);
+    
+    const paidQty = invoice.payments.reduce((sum: number, pay: any) => {
+      const payItem = pay.paymentItems?.find((i: any) => i.productId === item.productId);
+      return sum + (payItem ? payItem.paidQuantity : 0);
+    }, 0);
+
+    const netQty = item.quantity - returnedQty;
+    const pendingQty = Math.max(0, netQty - paidQty);
+    
+    acc[item.id] = { returnedQty, netQty, paidQty, pendingQty };
+    return acc;
+  }, {});
+
+  // Prepare items for the itemized payment form
+  const invoiceItemsForPayment = invoice.items.map((item) => ({
+    id: item.id,
+    productId: item.productId,
+    productName: item.product.name,
+    productSku: item.product.sku,
+    productUnit: item.product.unit,
+    quantity: item.quantity,
+    unitPrice: Number(item.unitPrice),
+    lineTotal: Number(item.lineTotal),
+  }));
 
   return (
     <div className="max-w-5xl mx-auto print:max-w-full">
@@ -84,7 +116,7 @@ export default async function InvoiceDetailPage({ params }: Props) {
             {/* Entities */}
             <div className="grid grid-cols-2 gap-8 mb-8">
               <div>
-                <p className="text-xs text-muted-foreground uppercase tracking-wider mb-2 font-semibold">العميل (الصيدلية)</p>
+                <p className="text-xs text-muted-foreground uppercase tracking-wider mb-2 font-semibold">العميل</p>
                 <div className="flex items-start gap-2">
                   <Building2 className="w-4 h-4 text-primary mt-0.5" />
                   <div>
@@ -113,22 +145,31 @@ export default async function InvoiceDetailPage({ params }: Props) {
                   <tr className="bg-muted/40 border-b border-border/50">
                     <th className="text-right px-4 py-3 font-semibold text-muted-foreground">المنتج</th>
                     <th className="text-center px-4 py-3 font-semibold text-muted-foreground">الكمية</th>
+                    <th className="text-center px-4 py-3 font-semibold text-muted-foreground">الكمية بعد المرتجع</th>
+                    <th className="text-center px-4 py-3 font-semibold text-muted-foreground">المتبقية للدفع</th>
                     <th className="text-center px-4 py-3 font-semibold text-muted-foreground">سعر الوحدة</th>
                     <th className="text-center px-4 py-3 font-semibold text-muted-foreground">الإجمالي</th>
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-border/50">
-                  {invoice.items.map((item) => (
+                  {invoice.items.map((item) => {
+                    const calc = itemCalculations[item.id];
+                    return (
                     <tr key={item.id}>
                       <td className="px-4 py-3">
                         <p className="font-medium text-foreground">{item.product.name}</p>
                         <p className="text-xs text-muted-foreground font-mono">{item.product.sku}</p>
                       </td>
                       <td className="px-4 py-3 text-center">{item.quantity} {item.product.unit}</td>
+                      <td className="px-4 py-3 text-center font-semibold text-primary">
+                        {calc.netQty} {item.product.unit}
+                        {calc.returnedQty > 0 && <span className="block text-[10px] text-red-500 font-normal">(-{calc.returnedQty} مرتجع)</span>}
+                      </td>
+                      <td className="px-4 py-3 text-center text-amber-600 font-semibold">{calc.pendingQty} {item.product.unit}</td>
                       <td className="px-4 py-3 text-center">{formatCurrency(item.unitPrice.toString())}</td>
                       <td className="px-4 py-3 text-center font-semibold text-foreground">{formatCurrency(item.lineTotal.toString())}</td>
                     </tr>
-                  ))}
+                  )})}
                 </tbody>
               </table>
             </div>
@@ -137,12 +178,26 @@ export default async function InvoiceDetailPage({ params }: Props) {
             <div className="flex justify-end mb-8">
               <div className="w-full sm:w-1/2 space-y-3">
                 <div className="flex justify-between items-center text-sm">
-                  <span className="text-muted-foreground">الإجمالي قبل الخصم:</span>
-                  <span className="font-medium text-foreground">{formatCurrency(invoice.total.toString())}</span>
+                  <span className="text-muted-foreground">المجموع قبل الخصم:</span>
+                  <span className="font-medium text-foreground">{formatCurrency(invoice.subtotal.toString())}</span>
                 </div>
-                <div className="flex justify-between items-center text-sm pb-3 border-b border-border/50">
-                  <span className="text-muted-foreground">الخصم/الضريبة:</span>
-                  <span className="font-medium text-foreground">0.00 ج.م</span>
+                {hasDiscount && (
+                  <div className="flex justify-between items-center text-sm">
+                    <span className="text-muted-foreground">
+                      الخصم{" "}
+                      {invoice.discountType === "PERCENTAGE"
+                        ? `(${Number(invoice.discountValue)}%)`
+                        : "(مبلغ ثابت)"}
+                      :
+                    </span>
+                    <span className="font-medium text-red-600">
+                      - {formatCurrency(invoice.discountAmount.toString())}
+                    </span>
+                  </div>
+                )}
+                <div className="flex justify-between items-center pb-3 border-b border-border/50">
+                  <span className="text-muted-foreground text-sm">الضريبة (VAT):</span>
+                  <span className="font-medium text-foreground text-sm">{formatCurrency(invoice.vatAmount.toString())}</span>
                 </div>
                 <div className="flex justify-between items-center">
                   <span className="font-semibold text-foreground">الصافي:</span>
@@ -183,7 +238,19 @@ export default async function InvoiceDetailPage({ params }: Props) {
         <div className="space-y-6 print:hidden">
           
           {/* Payment Form (Only if remaining balance > 0) */}
-          <PaymentForm invoiceId={invoice.id} remainingAmount={Number(invoice.remainingAmount)} />
+          <PaymentForm
+            invoiceId={invoice.id}
+            remainingAmount={Number(invoice.remainingAmount)}
+            invoiceItems={invoiceItemsForPayment}
+          />
+
+          {/* Return Form (Only if not cancelled) */}
+          {invoice.status !== InvoiceStatus.CANCELLED && (
+            <ReturnForm
+              invoiceId={invoice.id}
+              invoiceItems={invoiceItemsForPayment}
+            />
+          )}
           
           {/* Payment History */}
           {invoice.payments.length > 0 && (
@@ -195,6 +262,7 @@ export default async function InvoiceDetailPage({ params }: Props) {
                     <div>
                       <p className="font-semibold text-green-600">{formatCurrency(payment.amount.toString())}</p>
                       <p className="text-[10px] text-muted-foreground mt-0.5">{formatDate(payment.paidAt)}</p>
+                      <p className="text-[10px] text-muted-foreground">{payment.method === "CASH" ? "نقدي" : payment.method === "BANK_TRANSFER" ? "تحويل" : "شيك"}</p>
                     </div>
                     {payment.referenceNo && (
                       <span className="text-[10px] bg-muted px-2 py-0.5 rounded text-muted-foreground max-w-[100px] truncate">

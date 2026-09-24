@@ -9,9 +9,12 @@ import { FileText, ArrowRight } from "lucide-react";
 export const metadata: Metadata = { title: "إصدار فاتورة جديدة" };
 export const dynamic = "force-dynamic";
 
-export default async function NewInvoicePage() {
-  const [pharmacies, salesReps, products] = await Promise.all([
-    prisma.pharmacy.findMany({ select: { id: true, name: true }, orderBy: { name: "asc" } }),
+export default async function NewInvoicePage({ searchParams }: { searchParams: { clientId?: string } }) {
+  const [clients, salesReps, products] = await Promise.all([
+    prisma.pharmacy.findMany({
+      where: { isActive: true },
+      orderBy: { name: "asc" },
+    }),
     getAllSalesReps(),
     getAllProducts(),
   ]);
@@ -30,15 +33,17 @@ export default async function NewInvoicePage() {
             <FileText className="w-6 h-6 text-primary" />
             إصدار فاتورة مبيعات
           </h1>
-          <p className="page-subtitle">إنشاء فاتورة نقدية أو آجلة لصيدلية</p>
+          <p className="page-subtitle">إنشاء فاتورة نقدية أو آجلة لصيدلية أو مستودع خارجي</p>
         </div>
       </div>
 
       <InvoiceForm
-        pharmacies={pharmacies}
+        pharmacies={clients.map(c => ({ id: c.id, name: c.name, clientType: c.clientType }))}
         salesReps={salesReps}
         products={products.map(p => ({ id: p.id, name: p.name, sku: p.sku, sellingPrice: Number(p.sellingPrice) }))}
+        initialClientId={searchParams.clientId}
       />
     </div>
   );
 }
+

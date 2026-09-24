@@ -101,6 +101,18 @@ enum UserRole {
   VIEWER
 }
 
+/// NEW: Discount type for invoice-level discounts
+enum DiscountType {
+  PERCENTAGE  // % off the subtotal
+  FIXED       // Flat amount off (ج.م)
+}
+
+/// NEW: Client type — pharmacies or external warehouses/companies
+enum ClientType {
+  PHARMACY
+  EXTERNAL_WAREHOUSE
+}
+
 // ============================================================
 // AUTHENTICATION & USERS
 // ============================================================
@@ -238,12 +250,15 @@ model Product {
   updatedAt            DateTime @updatedAt
 
   // Relations
-  category              Category            @relation(fields: [categoryId], references: [id])
-  suppliers             SupplierProduct[]
-  stockItems            StockItem[]
-  stockMovementItems    StockMovementItem[]
-  invoiceItems          InvoiceItem[]
-  repInventoryItems     RepInventoryItem[]
+  category                Category              @relation(fields: [categoryId], references: [id])
+  suppliers               SupplierProduct[]
+  stockItems              StockItem[]
+  stockMovementItems      StockMovementItem[]
+  invoiceItems            InvoiceItem[]
+  repInventoryItems       RepInventoryItem[]
+  paymentItems            PaymentItem[]
+  repMonthlyTargetItems   RepMonthlyTargetItem[]
+  returnItems             ReturnItem[]
 
   @@map("products")
 }
@@ -331,21 +346,25 @@ model StockMovementItem {
 // PHARMACIES / CLIENTS (الصيدليات)
 // ============================================================
 
+/// Generic client entity — can be a Pharmacy or External Warehouse/Company.
+/// clientType distinguishes the nature of the client.
 model Pharmacy {
-  id             String   @id @default(cuid())
+  id             String     @id @default(cuid())
   name           String
   ownerName      String?
-  licenseNumber  String?  @unique
+  licenseNumber  String?    @unique
   phone          String?
   address        String?
   governorateId  String
-  salesTarget    Decimal  @default(0)  @db.Decimal(14, 2) // monthly sales target
-  creditDuration Int?                                      // override: max credit days
-  creditLimit    Decimal? @db.Decimal(14, 2)              // max outstanding credit
-  currentBalance Decimal  @default(0)  @db.Decimal(14, 2) // outstanding (positive = owes us)
-  isActive       Boolean  @default(true)
-  createdAt      DateTime @default(now())
-  updatedAt      DateTime @updatedAt
+  /// NEW: Distinguishes pharmacy clients from external warehouses/companies
+  clientType     ClientType @default(PHARMACY)
+  salesTarget    Decimal    @default(0)  @db.Decimal(14, 2) // monthly sales target
+  creditDuration Int?                                        // override: max credit days
+  creditLimit    Decimal?   @db.Decimal(14, 2)              // max outstanding credit
+  currentBalance Decimal    @default(0)  @db.Decimal(14, 2) // outstanding (positive = owes us)
+  isActive       Boolean    @default(true)
+  createdAt      DateTime   @default(now())
+  updatedAt      DateTime   @updatedAt
 
   // Relations
   governorate         Governorate            @relation(fields: [governorateId], references: [id])
@@ -404,6 +423,7 @@ model SalesRep {
   invoices           Invoice[]
   stockMovements     StockMovement[]
   targetPeriods      RepTargetPeriod[]
+  monthlyTargets     RepMonthlyTarget[]
   bonuses            RepBonus[]
   deductions         RepDeduction[]
   dailyReports       RepDailyReport[]
@@ -445,6 +465,41 @@ model RepTargetPeriod {
 
   @@unique([salesRepId, periodYear, periodMonth])
   @@map("rep_target_periods")
+}
+
+/// NEW: Product-based monthly targets for sales reps
+/// One record per rep per month/year combination
+model RepMonthlyTarget {
+  id         String   @id @default(cuid())
+  salesRepId String
+  month      Int      // 1–12
+  year       Int
+  notes      String?
+  createdAt  DateTime @default(now())
+  updatedAt  DateTime @updatedAt
+
+  // Relations
+  salesRep   SalesRep               @relation(fields: [salesRepId], references: [id])
+  items      RepMonthlyTargetItem[]
+
+  @@unique([salesRepId, month, year])
+  @@map("rep_monthly_targets")
+}
+
+/// NEW: Individual product line within a rep monthly target
+model RepMonthlyTargetItem {
+  id               String           @id @default(cuid())
+  targetId         String
+  productId        String
+  targetQuantity   Int              // how many boxes to sell this month
+  achievedQuantity Int              @default(0) // filled in as invoices are created
+
+  // Relations
+  target           RepMonthlyTarget @relation(fields: [targetId], references: [id], onDelete: Cascade)
+  product          Product          @relation(fields: [productId], references: [id])
+
+  @@unique([targetId, productId])
+  @@map("rep_monthly_target_items")
 }
 
 /// Stock batch issued to a sales rep from a warehouse
@@ -538,7 +593,7 @@ model AppSettings {
 
 model Invoice {
   id              String        @id @default(cuid())
-  invoiceNumber   String        @unique   // e.g., "INV-2025-00001"
+  invoiceNumber   String        @unique   // format: INV-YYYYMMDD-{manualNumber}
   type            InvoiceType
   status          InvoiceStatus @default(DRAFT)
   pharmacyId      String
@@ -547,6 +602,10 @@ model Invoice {
   dueDate         DateTime?     // populated for CREDIT invoices
   creditDays      Int?          // snapshot of credit duration at invoice time
   subtotal        Decimal       @db.Decimal(14, 2)
+  /// NEW: Type of discount applied at invoice level
+  discountType    DiscountType  @default(PERCENTAGE)
+  /// NEW: Discount value — either a percentage (0–100) or a flat EGP amount
+  discountValue   Decimal       @default(0) @db.Decimal(14, 2)
   discountAmount  Decimal       @default(0) @db.Decimal(14, 2)
   vatAmount       Decimal       @default(0) @db.Decimal(14, 2)
   total           Decimal       @db.Decimal(14, 2)
@@ -604,9 +663,27 @@ model Payment {
   invoice      Invoice       @relation(fields: [invoiceId], references: [id])
   pharmacy     Pharmacy      @relation(fields: [pharmacyId], references: [id])
   transaction  Transaction?
+  /// NEW: Itemized breakdown — which products were paid for in this payment
+  paymentItems PaymentItem[]
 
   @@index([invoiceId])
   @@map("payments")
+}
+
+/// NEW: Tracks which specific product quantities were covered by a given payment.
+/// Only populated when payment mode is "Pay by Products" (itemized).
+model PaymentItem {
+  id            String   @id @default(cuid())
+  paymentId     String
+  productId     String
+  paidQuantity  Int                          // number of boxes covered by this payment
+  unitPrice     Decimal  @db.Decimal(12, 2) // price snapshot at payment time
+
+  // Relations
+  payment       Payment  @relation(fields: [paymentId], references: [id], onDelete: Cascade)
+  product       Product  @relation(fields: [productId], references: [id])
+
+  @@map("payment_items")
 }
 
 // ============================================================
@@ -643,6 +720,7 @@ model ReturnItem {
 
   // Relations
   return    Return   @relation(fields: [returnId], references: [id], onDelete: Cascade)
+  product   Product  @relation(fields: [productId], references: [id])
 
   @@map("return_items")
 }

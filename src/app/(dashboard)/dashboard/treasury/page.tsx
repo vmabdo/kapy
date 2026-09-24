@@ -96,7 +96,6 @@ export default async function TreasuryPage() {
                       <th className="text-center px-4 py-3 font-medium text-muted-foreground">المبلغ</th>
                       <th className="text-right px-4 py-3 font-medium text-muted-foreground">التصنيف</th>
                       <th className="text-right px-4 py-3 font-medium text-muted-foreground">البيان/المرجع</th>
-                      <th className="text-right px-4 py-3 font-medium text-muted-foreground">بواسطة</th>
                       <th className="text-right px-4 py-3 font-medium text-muted-foreground">التاريخ</th>
                     </tr>
                   </thead>
@@ -121,10 +120,9 @@ export default async function TreasuryPage() {
                           </td>
                           <td className="px-4 py-3 text-muted-foreground">{tx.category}</td>
                           <td className="px-4 py-3">
-                            <p className="font-medium max-w-[150px] truncate">{tx.notes || "—"}</p>
-                            {tx.reference && <p className="text-[10px] text-muted-foreground font-mono mt-0.5">{tx.reference}</p>}
+                            <p className="font-medium whitespace-normal break-words min-w-[250px]">{tx.description || tx.notes || "—"}</p>
+                            {tx.referenceNo && <p className="text-[10px] text-muted-foreground font-mono mt-0.5">{tx.referenceNo}</p>}
                           </td>
-                          <td className="px-4 py-3 text-xs text-muted-foreground">{tx.user.name}</td>
                           <td className="px-4 py-3 text-muted-foreground text-xs whitespace-nowrap">
                             {formatDate(tx.createdAt)}
                           </td>

@@ -3,29 +3,28 @@
 import { prisma } from "@/lib/prisma";
 import { requireRole } from "@/lib/auth-utils";
 import { revalidatePath } from "next/cache";
-import { UserRole } from "@prisma/client";
+import { UserRole, ClientType } from "@prisma/client";
 import { z } from "zod";
 
-const CreatePharmacySchema = z.object({
-  name: z.string().min(2, "اسم الصيدلية مطلوب"),
+const CreateCompanySchema = z.object({
+  name: z.string().min(2, "اسم الشركة مطلوب"),
   licenseNumber: z.string().optional(),
-  taxNumber: z.string().optional(),
   address: z.string().optional(),
   phone: z.string().optional(),
   governorateId: z.string().min(1, "اختر المحافظة"),
   assignedRepId: z.string().optional(),
-  creditLimit: z.coerce.number().min(0).default(50000),
-  targetAmount: z.coerce.number().min(0).default(10000),
+  creditLimit: z.coerce.number().min(0).default(100000),
+  targetAmount: z.coerce.number().min(0).default(0),
 });
 
-const UpdatePharmacySchema = z.object({
-  name: z.string().min(2, "اسم الصيدلية مطلوب"),
+const UpdateCompanySchema = z.object({
+  name: z.string().min(2, "اسم الشركة مطلوب"),
   licenseNumber: z.string().optional(),
   address: z.string().optional(),
   phone: z.string().optional(),
   governorateId: z.string().min(1, "اختر المحافظة"),
-  creditLimit: z.coerce.number().min(0).default(50000),
-  salesTarget: z.coerce.number().min(0).default(10000),
+  creditLimit: z.coerce.number().min(0).default(100000),
+  salesTarget: z.coerce.number().min(0).default(0),
   isActive: z.boolean().default(true),
 });
 
@@ -33,17 +32,17 @@ type ActionResult<T = void> =
   | { success: true; data: T; message?: string }
   | { success: false; error: string };
 
-export async function createPharmacy(
-  formData: z.infer<typeof CreatePharmacySchema>
+export async function createCompany(
+  formData: z.infer<typeof CreateCompanySchema>
 ): Promise<ActionResult<{ id: string }>> {
   try {
     await requireRole([UserRole.SUPER_ADMIN, UserRole.ADMIN, UserRole.SALES_MANAGER]);
 
-    const data = CreatePharmacySchema.parse(formData);
+    const data = CreateCompanySchema.parse(formData);
 
     const result = await prisma.$transaction(async (tx) => {
-      // 1. Create pharmacy
-      const pharmacy = await tx.pharmacy.create({
+      // 1. Create company (clientType: EXTERNAL_WAREHOUSE)
+      const company = await tx.pharmacy.create({
         data: {
           name: data.name,
           licenseNumber: data.licenseNumber,
@@ -54,6 +53,7 @@ export async function createPharmacy(
           salesTarget: data.targetAmount,
           currentBalance: 0,
           isActive: true,
+          clientType: ClientType.EXTERNAL_WAREHOUSE,
           ...(data.assignedRepId
             ? {
                 assignedReps: {
@@ -68,7 +68,7 @@ export async function createPharmacy(
       const now = new Date();
       await tx.pharmacyTargetPeriod.create({
         data: {
-          pharmacyId: pharmacy.id,
+          pharmacyId: company.id,
           periodYear: now.getFullYear(),
           periodMonth: now.getMonth() + 1,
           target: data.targetAmount,
@@ -76,24 +76,24 @@ export async function createPharmacy(
         },
       });
 
-      return pharmacy;
+      return company;
     });
 
-    revalidatePath("/dashboard/pharmacies");
-    return { success: true, data: { id: result.id }, message: "تم تسجيل الصيدلية بنجاح" };
+    revalidatePath("/dashboard/companies");
+    return { success: true, data: { id: result.id }, message: "تم تسجيل الشركة بنجاح" };
   } catch (e: unknown) {
     return { success: false, error: e instanceof Error ? e.message : "حدث خطأ غير متوقع" };
   }
 }
 
-export async function updatePharmacy(
+export async function updateCompany(
   id: string,
-  formData: z.infer<typeof UpdatePharmacySchema>
+  formData: z.infer<typeof UpdateCompanySchema>
 ): Promise<ActionResult> {
   try {
     await requireRole([UserRole.SUPER_ADMIN, UserRole.ADMIN, UserRole.SALES_MANAGER]);
 
-    const data = UpdatePharmacySchema.parse(formData);
+    const data = UpdateCompanySchema.parse(formData);
 
     await prisma.pharmacy.update({
       where: { id },
@@ -109,15 +109,15 @@ export async function updatePharmacy(
       },
     });
 
-    revalidatePath("/dashboard/pharmacies");
-    revalidatePath(`/dashboard/pharmacies/${id}`);
-    return { success: true, data: undefined, message: "تم تحديث بيانات الصيدلية بنجاح" };
+    revalidatePath("/dashboard/companies");
+    revalidatePath(`/dashboard/companies/${id}`);
+    return { success: true, data: undefined, message: "تم تحديث بيانات الشركة بنجاح" };
   } catch (e: unknown) {
     return { success: false, error: e instanceof Error ? e.message : "حدث خطأ غير متوقع" };
   }
 }
 
-export async function deletePharmacy(id: string): Promise<ActionResult> {
+export async function deleteCompany(id: string): Promise<ActionResult> {
   try {
     await requireRole([UserRole.SUPER_ADMIN, UserRole.ADMIN]);
 
@@ -126,7 +126,7 @@ export async function deletePharmacy(id: string): Promise<ActionResult> {
     if (invoiceCount > 0) {
       return {
         success: false,
-        error: `لا يمكن حذف هذه الصيدلية — مرتبطة بـ ${invoiceCount} فاتورة. قم بإلغاء تفعيلها عوضاً عن الحذف.`,
+        error: `لا يمكن حذف هذه الشركة — مرتبطة بـ ${invoiceCount} فاتورة. قم بإلغاء تفعيلها عوضاً عن الحذف.`,
       };
     }
 
@@ -135,50 +135,13 @@ export async function deletePharmacy(id: string): Promise<ActionResult> {
     if (paymentCount > 0) {
       return {
         success: false,
-        error: `لا يمكن حذف هذه الصيدلية — مرتبطة بـ ${paymentCount} دفعة مالية.`,
+        error: `لا يمكن حذف هذه الشركة — مرتبطة بـ ${paymentCount} دفعة مالية.`,
       };
     }
 
     await prisma.pharmacy.delete({ where: { id } });
-    revalidatePath("/dashboard/pharmacies");
-    return { success: true, data: undefined, message: "تم حذف الصيدلية بنجاح" };
-  } catch (e: unknown) {
-    return { success: false, error: e instanceof Error ? e.message : "حدث خطأ غير متوقع" };
-  }
-}
-
-const ChangeRepSchema = z.object({
-  pharmacyId: z.string().min(1),
-  salesRepId: z.string().min(1, "اختر المندوب"),
-});
-
-export async function changeAssignedRep(data: z.infer<typeof ChangeRepSchema>): Promise<ActionResult> {
-  try {
-    await requireRole([UserRole.SUPER_ADMIN, UserRole.ADMIN, UserRole.SALES_MANAGER]);
-    
-    const { pharmacyId, salesRepId } = ChangeRepSchema.parse(data);
-
-    await prisma.$transaction(async (tx) => {
-      // Remove all previous reps for this pharmacy
-      await tx.repPharmacy.deleteMany({
-        where: { pharmacyId },
-      });
-
-      // Assign the new rep
-      await tx.repPharmacy.create({
-        data: {
-          pharmacyId,
-          salesRepId,
-        },
-      });
-    });
-
-    revalidatePath("/dashboard/pharmacies");
-    revalidatePath(`/dashboard/pharmacies/${pharmacyId}`);
     revalidatePath("/dashboard/companies");
-    revalidatePath(`/dashboard/companies/${pharmacyId}`);
-    
-    return { success: true, data: undefined, message: "تم تغيير المندوب المسؤول بنجاح" };
+    return { success: true, data: undefined, message: "تم حذف الشركة بنجاح" };
   } catch (e: unknown) {
     return { success: false, error: e instanceof Error ? e.message : "حدث خطأ غير متوقع" };
   }
