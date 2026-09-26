@@ -150,7 +150,7 @@ export function TopBar({ user }: TopBarProps) {
   }, [showNotifs]);
 
   return (
-    <header className="h-16 bg-card/90 backdrop-blur-md border-b border-border/60 flex items-center gap-4 px-5 lg:px-7 shrink-0 sticky top-0 z-30">
+    <header className="h-16 bg-card/90 backdrop-blur-md border-b border-border/60 flex items-center gap-4 px-5 lg:px-7 shrink-0 sticky top-0 z-30 print:hidden">
 
       {/* ── Search ─────────────────────────────────────────── */}
       <div className="relative flex-1 max-w-md">

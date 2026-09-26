@@ -11,21 +11,22 @@ export default async function DashboardLayout({
   const session = await getRequiredSession();
 
   return (
-    <div className="min-h-screen bg-background flex">
-      {/* Sidebar */}
+    <div className="min-h-screen bg-background flex print:block">
+      {/* Sidebar — hidden on print */}
       <SidebarNav user={session.user} />
 
       {/* Main content area */}
-      <div className="flex-1 flex flex-col min-w-0">
+      <div className="flex-1 flex flex-col min-w-0 print:block print:w-full">
         <TopBar user={session.user} />
 
         {/* Page content — generous padding, max-width constraint */}
-        <main className="flex-1 px-5 py-6 lg:px-7 lg:py-7 overflow-auto">
-          <div className="max-w-[1600px] mx-auto">
+        <main className="flex-1 px-5 py-6 lg:px-7 lg:py-7 overflow-auto print:p-0 print:overflow-visible">
+          <div className="max-w-[1600px] mx-auto print:max-w-full print:mx-0">
             <PageTransition>{children}</PageTransition>
           </div>
         </main>
       </div>
     </div>
   );
+
 }

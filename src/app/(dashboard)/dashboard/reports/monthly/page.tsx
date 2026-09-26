@@ -180,7 +180,7 @@ export default async function MonthlyReportPage() {
         </div>
       </div>
 
-      <div className="bg-card border border-border rounded-xl p-8 print:border-none print:shadow-none print:p-0">
+      <div className="bg-card border border-border rounded-xl p-8 print:border print:border-gray-300 print:shadow-none print:p-0 print:rounded-none">
         
         <div className="hidden print:flex justify-between items-start mb-8 pb-6 border-b border-border/50">
           <div>
@@ -194,8 +194,8 @@ export default async function MonthlyReportPage() {
 
         {/* Top KPIs */}
         <div className="grid grid-cols-1 md:grid-cols-3 gap-6 mb-8">
-          
-          <div className="p-5 rounded-xl border border-border bg-gradient-to-br from-primary/5 to-cyan-500/5">
+          {/* KPI 1 — Total Sales */}
+          <div className="p-5 rounded-xl border border-border bg-gradient-to-br from-primary/5 to-cyan-500/5 print:shadow-none print:border print:border-black/20 print:bg-transparent">
             <p className="text-sm text-muted-foreground font-medium mb-1">إجمالي المبيعات (الشهر الحالي)</p>
             <p className="text-3xl font-bold text-primary mb-2">{formatCurrency(currentTotalSales.toString())}</p>
             <div className="flex items-center gap-2 text-sm">
@@ -210,7 +210,8 @@ export default async function MonthlyReportPage() {
             </div>
           </div>
 
-          <div className="p-5 rounded-xl border border-border bg-card flex flex-col justify-center">
+          {/* KPI 2 — Cash vs Credit split */}
+          <div className="p-5 rounded-xl border border-border bg-card flex flex-col justify-center print:shadow-none print:border print:border-black/20">
             <div className="flex justify-between items-center mb-2">
               <p className="text-sm text-muted-foreground font-medium">مبيعات نقدية</p>
               <p className="font-bold text-green-600">{formatCurrency(currentCashSales.toString())}</p>
@@ -227,7 +228,8 @@ export default async function MonthlyReportPage() {
             </div>
           </div>
 
-          <div className="p-5 rounded-xl border border-border bg-card flex flex-col justify-center items-center text-center">
+          {/* KPI 3 — Target Achievement */}
+          <div className="p-5 rounded-xl border border-border bg-card flex flex-col justify-center items-center text-center print:shadow-none print:border print:border-black/20">
             <Target className="w-8 h-8 text-amber-500 mb-2" />
             <p className="text-sm text-muted-foreground font-medium mb-1">إجمالي تحقيق أهداف السوق</p>
             <p className="text-3xl font-bold text-foreground mb-1">{overallTargetPercentage}%</p>
@@ -299,7 +301,7 @@ export default async function MonthlyReportPage() {
                   </thead>
                   <tbody className="divide-y divide-border/60">
                     {topByQuantity.map((client: any, idx: number) => (
-                      <tr key={idx} className="bg-card">
+                      <tr key={idx} className="bg-card print:break-inside-avoid">
                         <td className="px-4 py-3 font-bold text-foreground">
                           {idx + 1}. {client.name}
                         </td>
@@ -331,7 +333,7 @@ export default async function MonthlyReportPage() {
                   </thead>
                   <tbody className="divide-y divide-border/60">
                     {topByCollection.map((client: any, idx: number) => (
-                      <tr key={idx} className="bg-card">
+                      <tr key={idx} className="bg-card print:break-inside-avoid">
                         <td className="px-4 py-3 font-bold text-foreground">
                           {idx + 1}. {client.name}
                         </td>
@@ -366,7 +368,7 @@ export default async function MonthlyReportPage() {
                 </thead>
                 <tbody className="divide-y divide-border/60">
                   {governoratesPerformance.map((gov: any, idx: number) => (
-                    <tr key={idx} className="bg-card hover:bg-muted/10 transition-colors">
+                    <tr key={idx} className="bg-card hover:bg-muted/10 transition-colors print:break-inside-avoid">
                       <td className="px-4 py-3 font-bold text-foreground">{gov.name}</td>
                       <td className="px-4 py-3 text-center text-primary font-semibold">{formatCurrency(gov.totalSales.toString())}</td>
                       <td className="px-4 py-3 text-center text-green-600 font-semibold">{formatCurrency(gov.totalCollections.toString())}</td>
@@ -405,7 +407,7 @@ export default async function MonthlyReportPage() {
                     const netSales = rep.totalSales - rep.totalReturns;
                     const achievement = rep.target > 0 ? Math.round((netSales / rep.target) * 100) : 0;
                     return (
-                      <tr key={idx} className="bg-card hover:bg-muted/10 transition-colors">
+                      <tr key={idx} className="bg-card hover:bg-muted/10 transition-colors print:break-inside-avoid">
                         <td className="px-4 py-3 font-bold text-foreground">{rep.name}</td>
                         <td className="px-4 py-3 text-center font-medium">{rep.invoicesCount}</td>
                         <td className="px-4 py-3 text-center text-primary font-semibold">{formatCurrency(rep.totalSales.toString())}</td>
@@ -458,7 +460,7 @@ export default async function MonthlyReportPage() {
                 </thead>
                 <tbody className="divide-y divide-border/60">
                   {returnsList.map((ret: any) => (
-                    <tr key={ret.id} className="bg-card">
+                    <tr key={ret.id} className="bg-card print:break-inside-avoid">
                       <td className="px-4 py-3 text-muted-foreground text-xs">{ret.returnDate.toLocaleDateString("ar-EG")}</td>
                       <td className="px-4 py-3 font-semibold text-foreground">{ret.pharmacy.name}</td>
                       <td className="px-4 py-3 text-xs">

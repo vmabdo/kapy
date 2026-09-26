@@ -2,7 +2,7 @@ import type { Metadata } from "next";
 import Link from "next/link";
 import { notFound } from "next/navigation";
 import { getSalesRepById } from "@/queries/sales";
-import { getAllProducts } from "@/queries/inventory";
+import { getAllProducts, getAllWarehouses } from "@/queries/inventory";
 import { prisma } from "@/lib/prisma";
 import { formatCurrency, formatDate, cn } from "@/lib/utils";
 import {
@@ -11,6 +11,8 @@ import {
 } from "lucide-react";
 import { BonusDeductionForms } from "./bonus-deduction-forms";
 import { RepMonthlyTargetForm } from "@/components/sales/rep-monthly-target-form";
+import { RepCustodySection } from "./rep-custody-section";
+import { getRepCustodyInventory } from "@/actions/rep-custody";
 
 export const dynamic = "force-dynamic";
 
@@ -28,7 +30,7 @@ export default async function RepDetailPage({ params }: { params: { id: string }
   const currentMonth = now.getMonth() + 1;
 
   // Financial data for current month
-  const [monthInvoices, bonuses, deductions, targetPeriod, repMonthlyTarget, allProducts] = await Promise.all([
+  const [monthInvoices, bonuses, deductions, targetPeriod, repMonthlyTarget, allProducts, warehouses, custodyItems] = await Promise.all([
     prisma.invoice.aggregate({
       where: {
         salesRepId: rep.id,
@@ -55,6 +57,8 @@ export default async function RepDetailPage({ params }: { params: { id: string }
       include: { items: { include: { product: { select: { id: true, name: true, sku: true, unit: true } } } } },
     }),
     getAllProducts(),
+    getAllWarehouses(),
+    getRepCustodyInventory(rep.id),
   ]);
 
   const monthSales = Number(monthInvoices._sum.total ?? 0);
@@ -274,6 +278,22 @@ export default async function RepDetailPage({ params }: { params: { id: string }
           )}
         </div>
       </div>
+
+      {/* ─── Rep Custody Section (عهدة المندوب) ──────────────── */}
+      <RepCustodySection
+        repId={rep.id}
+        products={allProducts.map((p) => ({
+          id: p.id,
+          name: p.name,
+          sku: p.sku,
+          unit: p.unit,
+        }))}
+        warehouses={warehouses.map((wh) => ({
+          id: wh.id,
+          name: wh.name,
+        }))}
+        custodyItems={custodyItems}
+      />
 
       {/* Main content grid */}
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">

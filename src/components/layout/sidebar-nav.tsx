@@ -161,7 +161,7 @@ export function SidebarNav({ user }: SidebarNavProps) {
 
   return (
     <aside
-      className="w-64 min-h-screen bg-sidebar flex flex-col border-l border-sidebar-border shrink-0"
+      className="w-64 min-h-screen bg-sidebar flex flex-col border-l border-sidebar-border shrink-0 print:hidden"
       style={{ boxShadow: "var(--shadow-sidebar)" }}
     >
       {/* ── Logo ─────────────────────────────────────────────── */}

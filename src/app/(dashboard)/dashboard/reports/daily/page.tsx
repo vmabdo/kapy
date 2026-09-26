@@ -95,7 +95,7 @@ export default async function DailyReportPage() {
         </div>
       </div>
 
-      <div className="bg-card border border-border rounded-xl p-8 print:border-none print:shadow-none print:p-0">
+      <div className="bg-card border border-border rounded-xl p-8 print:border print:border-gray-300 print:shadow-none print:p-0 print:rounded-none">
         
         {/* Print Header */}
         <div className="hidden print:flex justify-between items-start mb-8 pb-6 border-b border-border/50">
@@ -111,19 +111,19 @@ export default async function DailyReportPage() {
 
         {/* Summary KPIs */}
         <div className="grid grid-cols-2 md:grid-cols-4 gap-4 mb-8">
-          <div className="p-4 rounded-xl border border-border bg-muted/20">
+          <div className="p-4 rounded-xl border border-border bg-muted/20 print:shadow-none print:border print:border-black/20">
             <p className="text-xs text-muted-foreground font-medium mb-1">المبيعات النقدية</p>
             <p className="text-xl font-bold text-green-600">{formatCurrency(cashSales.toString())}</p>
           </div>
-          <div className="p-4 rounded-xl border border-border bg-muted/20">
+          <div className="p-4 rounded-xl border border-border bg-muted/20 print:shadow-none print:border print:border-black/20">
             <p className="text-xs text-muted-foreground font-medium mb-1">المبيعات الآجلة</p>
             <p className="text-xl font-bold text-blue-600">{formatCurrency(creditSales.toString())}</p>
           </div>
-          <div className="p-4 rounded-xl border border-border bg-muted/20">
+          <div className="p-4 rounded-xl border border-border bg-muted/20 print:shadow-none print:border print:border-black/20">
             <p className="text-xs text-muted-foreground font-medium mb-1">التحصيلات النقدية (دفعات آجلة)</p>
             <p className="text-xl font-bold text-green-600">{formatCurrency(totalCollections.toString())}</p>
           </div>
-          <div className="p-4 rounded-xl border border-border bg-red-50/50 dark:bg-red-900/10">
+          <div className="p-4 rounded-xl border border-border bg-red-50/50 dark:bg-red-900/10 print:shadow-none print:border print:border-black/20">
             <p className="text-xs text-red-600 dark:text-red-400 font-medium mb-1">المنصرف والمصروفات</p>
             <p className="text-xl font-bold text-red-600">{formatCurrency(totalExpenses.toString())}</p>
           </div>
@@ -140,7 +140,7 @@ export default async function DailyReportPage() {
           ) : (
             <div className="space-y-6">
               {Object.values(pharmacyInvoices).map((pharmacyData: any, idx: number) => (
-                <div key={idx} className="border border-border rounded-xl overflow-hidden bg-card shadow-sm">
+                <div key={idx} className="border border-border rounded-xl overflow-hidden bg-card shadow-sm print:shadow-none print:break-inside-avoid print:border-gray-300">
                   <div className="bg-muted/40 px-5 py-3 flex justify-between items-center border-b border-border">
                     <h4 className="font-bold text-base text-foreground flex items-center gap-2">
                       <span className="w-2 h-2 rounded-full bg-primary inline-block"></span>
@@ -171,7 +171,7 @@ export default async function DailyReportPage() {
                             </thead>
                             <tbody className="divide-y divide-border/40">
                               {inv.items.map((item: any) => (
-                                <tr key={item.id} className="hover:bg-muted/10 transition-colors">
+                                <tr key={item.id} className="hover:bg-muted/10 transition-colors print:break-inside-avoid">
                                   <td className="px-4 py-2 font-medium">{item.product.name}</td>
                                   <td className="px-4 py-2 text-center text-primary font-bold">{item.quantity}</td>
                                   <td className="px-4 py-2 text-center">{formatCurrency(item.unitPrice.toString())}</td>
@@ -210,7 +210,7 @@ export default async function DailyReportPage() {
               </thead>
               <tbody>
                 {payments.map((p: any) => (
-                  <tr key={p.id}>
+                  <tr key={p.id} className="print:break-inside-avoid">
                     <td className="border border-border px-3 py-2 font-mono">{p.invoice.invoiceNumber}</td>
                     <td className="border border-border px-3 py-2">{p.invoice.pharmacy.name}</td>
                     <td className="border border-border px-3 py-2">{p.referenceNo || "—"}</td>
@@ -242,7 +242,7 @@ export default async function DailyReportPage() {
               </thead>
               <tbody>
                 {treasuryOut.map((t: any) => (
-                  <tr key={t.id}>
+                  <tr key={t.id} className="print:break-inside-avoid">
                     <td className="border border-border px-3 py-2">{t.category}</td>
                     <td className="border border-border px-3 py-2">{t.description || "—"}</td>
                     <td className="border border-border px-3 py-2">{t.referenceNo || "—"}</td>
@@ -274,7 +274,7 @@ export default async function DailyReportPage() {
               </thead>
               <tbody>
                 {returnsList.map((ret: any) => (
-                  <tr key={ret.id}>
+                  <tr key={ret.id} className="print:break-inside-avoid">
                     <td className="border border-border px-3 py-2 font-mono">{ret.returnNumber}</td>
                     <td className="border border-border px-3 py-2">{ret.pharmacy.name}</td>
                     <td className="border border-border px-3 py-2">

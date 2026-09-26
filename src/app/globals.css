@@ -457,3 +457,53 @@ body, main, header, aside, nav,
   outline-offset: 2px;
   border-radius: calc(var(--radius) - 2px);
 }
+
+/* ============================================================
+   PRINT STYLES — Professional A4 document layout
+   ============================================================ */
+@media print {
+  /* ── Page Setup ─────────────────────────────────────────── */
+  @page {
+    size: A4;
+    margin: 1.2cm 1cm;
+  }
+
+  /* ── Color & Font Fidelity ──────────────────────────────── */
+  body {
+    print-color-adjust: exact;
+    -webkit-print-color-adjust: exact;
+    /* Reset dark-mode backgrounds to white for ink efficiency */
+    background-color: #fff !important;
+    color: #111 !important;
+  }
+
+  /* ── Suppress theme transition flicker ──────────────────── */
+  body, main, header, aside, nav,
+  .bg-card, .bg-background, .bg-sidebar,
+  .border-border, .border-sidebar-border {
+    transition: none !important;
+  }
+
+  /* ── Remove scrollbars ───────────────────────────────────── */
+  ::-webkit-scrollbar { display: none; }
+  * { scrollbar-width: none; }
+
+  /* ── Avoid awkward page breaks inside rows/cards ─────────── */
+  tr, .print-avoid-break {
+    break-inside: avoid;
+    page-break-inside: avoid;
+  }
+
+  /* ── URL suppression for links ───────────────────────────── */
+  a[href]::after { content: none !important; }
+
+  /* ── Force white card backgrounds for readability ─────────── */
+  .bg-card, [class*="bg-card"] {
+    background-color: #fff !important;
+  }
+
+  /* ── Ensure full-page content width ─────────────────────── */
+  .max-w-5xl, .max-w-\[1600px\] {
+    max-width: 100% !important;
+  }
+}

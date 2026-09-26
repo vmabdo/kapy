@@ -95,7 +95,7 @@ export default async function InvoiceDetailPage({ params }: Props) {
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
         {/* Main Invoice Document (Printable) */}
         <div className="lg:col-span-2 space-y-6">
-          <div className="bg-card border border-border rounded-xl p-8 print:border-none print:shadow-none print:p-0">
+          <div className="bg-card border border-border rounded-xl p-8 print:border print:border-gray-300 print:shadow-none print:p-0 print:rounded-none">
             {/* Print Header */}
             <div className="flex justify-between items-start mb-8 pb-6 border-b border-border/50">
               <div>
@@ -155,7 +155,7 @@ export default async function InvoiceDetailPage({ params }: Props) {
                   {invoice.items.map((item) => {
                     const calc = itemCalculations[item.id];
                     return (
-                    <tr key={item.id}>
+                    <tr key={item.id} className="print:break-inside-avoid">
                       <td className="px-4 py-3">
                         <p className="font-medium text-foreground">{item.product.name}</p>
                         <p className="text-xs text-muted-foreground font-mono">{item.product.sku}</p>
@@ -175,7 +175,7 @@ export default async function InvoiceDetailPage({ params }: Props) {
             </div>
 
             {/* Totals */}
-            <div className="flex justify-end mb-8">
+            <div className="flex justify-end mb-8 print:break-inside-avoid">
               <div className="w-full sm:w-1/2 space-y-3">
                 <div className="flex justify-between items-center text-sm">
                   <span className="text-muted-foreground">المجموع قبل الخصم:</span>

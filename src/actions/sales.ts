@@ -6,6 +6,7 @@ import { revalidatePath } from "next/cache";
 import { DiscountType, InvoiceStatus, InvoiceType, UserRole, TransactionType, TransactionCategory } from "@prisma/client";
 import { z } from "zod";
 import { addDays, format } from "date-fns";
+import { getRepProductCurrentQty } from "@/actions/rep-custody";
 
 // ─── Schemas ──────────────────────────────────────────────────
 
@@ -88,6 +89,25 @@ export async function createInvoice(
     const existing = await prisma.invoice.findUnique({ where: { invoiceNumber } });
     if (existing) {
       return { success: false, error: `رقم الفاتورة "${invoiceNumber}" موجود بالفعل. اختر رقماً مختلفاً.` };
+    }
+
+    // ── CRITICAL: Validate rep custody stock before any writes ──
+    // When a salesRepId is set, check that the rep has sufficient
+    // custody quantities for all products in the invoice.
+    if (data.salesRepId) {
+      for (const item of data.items) {
+        const available = await getRepProductCurrentQty(data.salesRepId, item.productId);
+        if (available < item.quantity) {
+          const product = await prisma.product.findUnique({
+            where: { id: item.productId },
+            select: { name: true },
+          });
+          return {
+            success: false,
+            error: `المندوب لا يملك كمية كافية من "${product?.name ?? item.productId}" في عهدته. المتاح: ${available}، المطلوب: ${item.quantity}`,
+          };
+        }
+      }
     }
 
     // Calculate subtotal
@@ -264,6 +284,41 @@ export async function createInvoice(
               where: { id: targetItem.id },
               data: { achievedQuantity: { increment: invoiceItem.quantity } },
             });
+          }
+        }
+      }
+
+      // 6. Deduct sold quantities from the rep's custody (RepInventoryItem)
+      //    using FIFO across all open batches.
+      if (data.salesRepId) {
+        for (const invoiceItem of data.items) {
+          let remaining = invoiceItem.quantity;
+
+          // Fetch open batch items for this product (oldest batch first)
+          const openItems = await tx.repInventoryItem.findMany({
+            where: {
+              productId: invoiceItem.productId,
+              currentQty: { gt: 0 },
+              repInventory: {
+                salesRepId: data.salesRepId,
+                closedAt: null,
+              },
+            },
+            include: { repInventory: { select: { issuedAt: true } } },
+            orderBy: { repInventory: { issuedAt: "asc" } },
+          });
+
+          for (const batchItem of openItems) {
+            if (remaining <= 0) break;
+            const deduct = Math.min(batchItem.currentQty, remaining);
+            await tx.repInventoryItem.update({
+              where: { id: batchItem.id },
+              data: {
+                soldQty: { increment: deduct },
+                currentQty: { decrement: deduct },
+              },
+            });
+            remaining -= deduct;
           }
         }
       }
