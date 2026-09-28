@@ -8,7 +8,7 @@ import { z } from "zod";
 
 const ReturnItemSchema = z.object({
   productId: z.string().min(1),
-  quantity: z.coerce.number().int().positive("الكمية يجب أن تكون أكبر من 0"),
+  quantity: z.coerce.number().positive("الكمية يجب أن تكون أكبر من 0"),
 });
 
 const ProcessReturnSchema = z.object({
@@ -34,8 +34,25 @@ export async function processInvoiceReturn(
     const result = await prisma.$transaction(async (tx) => {
       const invoice = await tx.invoice.findUniqueOrThrow({
         where: { id: data.invoiceId },
-        include: { items: true },
+        include: {
+          items: true,
+          pharmacy: { select: { governorateId: true, name: true } },
+        },
       });
+
+      // ── Find the SUB-warehouse in the client's governorate for returns ──
+      const subWarehouse = await tx.warehouse.findFirst({
+        where: {
+          type: "SUB",
+          governorateId: invoice.pharmacy.governorateId,
+          isActive: true,
+        },
+      });
+
+      // Fallback to MAIN warehouse if no SUB found
+      const targetWarehouse =
+        subWarehouse ??
+        (await tx.warehouse.findFirst({ where: { type: "MAIN" } }));
 
       // Calculate the total return value and build return items
       let totalReturnAmount = 0;
@@ -47,23 +64,22 @@ export async function processInvoiceReturn(
         if (!invItem) {
           throw new Error(`المنتج غير موجود في الفاتورة`);
         }
-        if (returnItem.quantity > invItem.quantity) {
+        if (returnItem.quantity > Number(invItem.quantity)) {
           throw new Error(`الكمية المرتجعة أكبر من الكمية المباعة للمنتج`);
         }
 
         const lineTotal = returnItem.quantity * Number(invItem.unitPrice);
-        
+
         // Calculate proportional discount if there's a percentage discount on the invoice
         let discountedLineTotal = lineTotal;
         if (invoice.discountType === "PERCENTAGE" && Number(invoice.discountValue) > 0) {
           discountedLineTotal = lineTotal - (lineTotal * Number(invoice.discountValue) / 100);
         } else if (invoice.discountType === "FIXED" && Number(invoice.discountValue) > 0) {
-           // Fixed discount distribution across all items based on value
-           const subtotal = Number(invoice.subtotal);
-           if(subtotal > 0) {
-              const proportion = lineTotal / subtotal;
-              discountedLineTotal = lineTotal - (Number(invoice.discountValue) * proportion);
-           }
+          const subtotal = Number(invoice.subtotal);
+          if (subtotal > 0) {
+            const proportion = lineTotal / subtotal;
+            discountedLineTotal = lineTotal - (Number(invoice.discountValue) * proportion);
+          }
         }
 
         totalReturnAmount += discountedLineTotal;
@@ -78,7 +94,7 @@ export async function processInvoiceReturn(
 
       // Generate Return Number
       const returnCount = await tx.return.count();
-      const returnNumber = `RET-${new Date().getFullYear()}${String(new Date().getMonth() + 1).padStart(2, '0')}-${returnCount + 1}`;
+      const returnNumber = `RET-${new Date().getFullYear()}${String(new Date().getMonth() + 1).padStart(2, "0")}-${returnCount + 1}`;
 
       // 1. Create Return Record
       const returnRecord = await tx.return.create({
@@ -95,22 +111,18 @@ export async function processInvoiceReturn(
         },
       });
 
-      // 2. Return items to stock (assuming main warehouse for returns if none specified)
-      const mainWarehouse = await tx.warehouse.findFirst({
-        where: { type: "MAIN" },
-      });
-
-      if (mainWarehouse) {
+      // 2. Return items to the client's governorate warehouse
+      if (targetWarehouse) {
         for (const item of data.items) {
           await tx.stockItem.upsert({
             where: {
               warehouseId_productId: {
-                warehouseId: mainWarehouse.id,
+                warehouseId: targetWarehouse.id,
                 productId: item.productId,
               },
             },
             create: {
-              warehouseId: mainWarehouse.id,
+              warehouseId: targetWarehouse.id,
               productId: item.productId,
               quantity: item.quantity,
             },
@@ -119,12 +131,28 @@ export async function processInvoiceReturn(
             },
           });
         }
+
+        // Record the stock movement for audit trail
+        await tx.stockMovement.create({
+          data: {
+            movementType: "RETURN_INBOUND",
+            source: "PHARMACY",
+            targetWarehouseId: targetWarehouse.id,
+            notes: `مرتجع رقم ${returnNumber} من ${invoice.pharmacy.name}`,
+            items: {
+              create: data.items.map((item) => ({
+                productId: item.productId,
+                quantity: item.quantity,
+              })),
+            },
+          },
+        });
       }
 
       // 3. Deduct from Invoice total and adjust balances
       const currentTotal = Number(invoice.total);
       const newTotal = currentTotal - totalReturnAmount;
-      
+
       let newRemaining = Number(invoice.remainingAmount);
       let newPaid = Number(invoice.paidAmount);
 
@@ -132,43 +160,41 @@ export async function processInvoiceReturn(
         // First deduct from remaining balance
         if (totalReturnAmount <= newRemaining) {
           newRemaining -= totalReturnAmount;
-          
+
           // Also reduce the pharmacy's debt
           await tx.pharmacy.update({
             where: { id: invoice.pharmacyId },
-            data: { currentBalance: { decrement: totalReturnAmount } }
+            data: { currentBalance: { decrement: totalReturnAmount } },
           });
         } else {
-          // The return is bigger than the remaining balance (means they overpaid or it's fully paid)
+          // The return is bigger than the remaining balance
           const difference = totalReturnAmount - newRemaining;
-          
+
           // Reduce pharmacy debt by the remaining amount
           if (newRemaining > 0) {
-             await tx.pharmacy.update({
+            await tx.pharmacy.update({
               where: { id: invoice.pharmacyId },
-              data: { currentBalance: { decrement: newRemaining } }
+              data: { currentBalance: { decrement: newRemaining } },
             });
           }
-          
+
           newRemaining = 0;
           newPaid -= difference;
-          
-          // The difference should technically be refunded from Treasury or credited to the pharmacy's wallet.
-          // For now, we will credit the pharmacy's balance negatively (acting as credit/wallet)
+
+          // Credit the pharmacy's balance (acts as credit/wallet)
           await tx.pharmacy.update({
             where: { id: invoice.pharmacyId },
-            data: { currentBalance: { decrement: difference } }
+            data: { currentBalance: { decrement: difference } },
           });
         }
       } else {
         // Cash invoice
         newPaid -= totalReturnAmount;
-        // Should ideally refund from treasury
       }
 
       // Update invoice status
       let newStatus = invoice.status;
-      if (newTotal === 0) {
+      if (newTotal <= 0) {
         newStatus = InvoiceStatus.CANCELLED;
       } else if (newRemaining <= 0.01) {
         newStatus = InvoiceStatus.PAID;

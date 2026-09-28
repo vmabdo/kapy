@@ -14,6 +14,7 @@ export default async function NewInvoicePage({ searchParams }: { searchParams: {
     prisma.pharmacy.findMany({
       where: { isActive: true },
       orderBy: { name: "asc" },
+      select: { id: true, name: true, clientType: true, governorateId: true },
     }),
     getAllSalesReps(),
     getAllProducts(),
@@ -38,9 +39,9 @@ export default async function NewInvoicePage({ searchParams }: { searchParams: {
       </div>
 
       <InvoiceForm
-        pharmacies={clients.map(c => ({ id: c.id, name: c.name, clientType: c.clientType }))}
+        pharmacies={clients.map(c => ({ id: c.id, name: c.name, clientType: c.clientType, governorateId: c.governorateId }))}
         salesReps={salesReps}
-        products={products.map(p => ({ id: p.id, name: p.name, sku: p.sku, sellingPrice: Number(p.sellingPrice) }))}
+        products={products.map(p => ({ id: p.id, name: p.name, sku: p.sku, unit: p.unit, sellingPrice: Number(p.sellingPrice) }))}
         initialClientId={searchParams.clientId}
       />
     </div>

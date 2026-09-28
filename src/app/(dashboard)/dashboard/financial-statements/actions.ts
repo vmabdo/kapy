@@ -67,6 +67,7 @@ export async function getIncomeStatement(year: number, month: number): Promise<I
       where: {
         invoiceDate: { gte: startDate, lte: endDate },
         status: { notIn: ["DRAFT", "CANCELLED"] },
+        isLegacy: false,
       },
       _sum: { total: true },
     }),
@@ -79,6 +80,7 @@ export async function getIncomeStatement(year: number, month: number): Promise<I
         invoice: {
           invoiceDate: { gte: startDate, lte: endDate },
           status: { notIn: ["DRAFT", "CANCELLED"] },
+          isLegacy: false,
         },
       },
       select: {

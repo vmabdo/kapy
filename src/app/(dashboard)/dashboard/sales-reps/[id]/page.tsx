@@ -11,8 +11,6 @@ import {
 } from "lucide-react";
 import { BonusDeductionForms } from "./bonus-deduction-forms";
 import { RepMonthlyTargetForm } from "@/components/sales/rep-monthly-target-form";
-import { RepCustodySection } from "./rep-custody-section";
-import { getRepCustodyInventory } from "@/actions/rep-custody";
 
 export const dynamic = "force-dynamic";
 
@@ -30,7 +28,7 @@ export default async function RepDetailPage({ params }: { params: { id: string }
   const currentMonth = now.getMonth() + 1;
 
   // Financial data for current month
-  const [monthInvoices, bonuses, deductions, targetPeriod, repMonthlyTarget, allProducts, warehouses, custodyItems] = await Promise.all([
+  const [monthInvoices, bonuses, deductions, targetPeriod, repMonthlyTarget, allProducts, warehouses] = await Promise.all([
     prisma.invoice.aggregate({
       where: {
         salesRepId: rep.id,
@@ -58,7 +56,6 @@ export default async function RepDetailPage({ params }: { params: { id: string }
     }),
     getAllProducts(),
     getAllWarehouses(),
-    getRepCustodyInventory(rep.id),
   ]);
 
   const monthSales = Number(monthInvoices._sum.total ?? 0);
@@ -219,8 +216,8 @@ export default async function RepDetailPage({ params }: { params: { id: string }
               notes: repMonthlyTarget.notes,
               items: repMonthlyTarget.items.map(i => ({
                 productId: i.productId,
-                targetQuantity: i.targetQuantity,
-                achievedQuantity: i.achievedQuantity,
+                targetQuantity: Number(i.targetQuantity),
+                achievedQuantity: Number(i.achievedQuantity),
               })),
             } : null}
           />
@@ -235,8 +232,8 @@ export default async function RepDetailPage({ params }: { params: { id: string }
           {repMonthlyTarget && repMonthlyTarget.items.length > 0 ? (
             <div className="space-y-3">
               {repMonthlyTarget.items.map((item) => {
-                const pct = item.targetQuantity > 0
-                  ? Math.min((item.achievedQuantity / item.targetQuantity) * 100, 100)
+              const pct = Number(item.targetQuantity) > 0
+                  ? Math.min((Number(item.achievedQuantity) / Number(item.targetQuantity)) * 100, 100)
                   : 0;
                 const color =
                   pct >= 100 ? "bg-emerald-500" :
@@ -263,7 +260,7 @@ export default async function RepDetailPage({ params }: { params: { id: string }
                         <div className={`h-full rounded-full transition-all duration-500 ${color}`} style={{ width: `${pct}%` }} />
                       </div>
                       <span className="text-xs text-muted-foreground whitespace-nowrap tabular-nums">
-                        {item.achievedQuantity} / {item.targetQuantity} {item.product.unit}
+                        {Number(item.achievedQuantity).toFixed(2)} / {Number(item.targetQuantity).toFixed(2)} {item.product.unit}
                       </span>
                     </div>
                   </div>
@@ -278,22 +275,6 @@ export default async function RepDetailPage({ params }: { params: { id: string }
           )}
         </div>
       </div>
-
-      {/* ─── Rep Custody Section (عهدة المندوب) ──────────────── */}
-      <RepCustodySection
-        repId={rep.id}
-        products={allProducts.map((p) => ({
-          id: p.id,
-          name: p.name,
-          sku: p.sku,
-          unit: p.unit,
-        }))}
-        warehouses={warehouses.map((wh) => ({
-          id: wh.id,
-          name: wh.name,
-        }))}
-        custodyItems={custodyItems}
-      />
 
       {/* Main content grid */}
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">

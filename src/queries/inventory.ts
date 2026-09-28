@@ -109,7 +109,7 @@ export async function getLowStockItems() {
       warehouse: { select: { name: true } },
     },
   });
-  return items.filter((item) => item.quantity <= item.product.reorderLevel);
+  return items.filter((item) => Number(item.quantity) <= item.product.reorderLevel);
 }
 
 // ─── Stock Movements ──────────────────────────────────────────

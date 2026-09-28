@@ -48,7 +48,7 @@ const ItemizedPaymentSchema = z.object({
       z.object({
         invoiceItemId: z.string(),
         productId: z.string(),
-        paidQuantity: z.coerce.number().int().min(0),
+        paidQuantity: z.coerce.number().min(0),
         unitPrice: z.coerce.number(),
       })
     )
@@ -322,6 +322,7 @@ export function PaymentForm({ invoiceId, remainingAmount, invoiceItems = [] }: P
                         type="number"
                         min={0}
                         max={item.quantity}
+                        step="any"
                         {...itemizedForm.register(`paymentItems.${index}.paidQuantity`)}
                         placeholder="0"
                         className="w-20 px-2 py-1.5 text-center text-sm rounded-lg border border-border bg-background focus:outline-none focus:ring-2 focus:ring-primary/30"

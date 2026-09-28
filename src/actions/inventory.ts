@@ -49,7 +49,7 @@ const CreateCategorySchema = z.object({
 
 const StockMovementItemSchema = z.object({
   productId: z.string().min(1),
-  quantity: z.coerce.number().int().positive("الكمية يجب أن تكون موجبة"),
+  quantity: z.coerce.number().positive("الكمية يجب أن تكون موجبة"),
   unitCost: z.coerce.number().optional(),
   expiryDate: z.string().optional(),
   batchNumber: z.string().optional(),
@@ -275,7 +275,7 @@ export async function createStockMovement(
           const stockItem = await prisma.stockItem.findUnique({
             where: { warehouseId_productId: { warehouseId: sourceId, productId: item.productId } },
           });
-          const available = (stockItem?.quantity ?? 0) - (stockItem?.reservedQty ?? 0);
+          const available = (Number(stockItem?.quantity ?? 0)) - (Number(stockItem?.reservedQty ?? 0));
           if (available < item.quantity) {
             const product = await prisma.product.findUnique({ where: { id: item.productId } });
             return {
@@ -414,7 +414,7 @@ export async function createStockMovement(
           });
           if (
             stockItem &&
-            stockItem.quantity <= stockItem.product.reorderLevel
+            Number(stockItem.quantity) <= stockItem.product.reorderLevel
           ) {
             await tx.alert.create({
               data: {

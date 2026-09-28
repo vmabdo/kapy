@@ -83,7 +83,7 @@ export default async function ProductsPage() {
               </thead>
               <tbody>
                 {products.map((product) => {
-                  const totalStock = product.stockItems.reduce((s, i) => s + i.quantity, 0);
+                  const totalStock = product.stockItems.reduce((s, i) => s + Number(i.quantity), 0);
                   const isLow = totalStock <= product.reorderLevel && product.reorderLevel > 0;
 
                   return (

@@ -18,7 +18,7 @@ export default async function DailyReportPage() {
   const [invoices, payments, treasuryOut, returnsList] = await Promise.all([
     // Today's invoices
     prisma.invoice.findMany({
-      where: { invoiceDate: { gte: today, lt: tomorrow } },
+      where: { invoiceDate: { gte: today, lt: tomorrow }, isLegacy: false },
       include: { 
         pharmacy: { select: { id: true, name: true } }, 
         salesRep: { select: { name: true } },

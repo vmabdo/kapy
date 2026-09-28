@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useTransition } from "react";
+import { useState, useTransition, useEffect } from "react";
 import { useRouter } from "next/navigation";
 import { useForm, useFieldArray, useWatch } from "react-hook-form";
 import { zodResolver } from "@hookform/resolvers/zod";
@@ -23,15 +23,22 @@ import {
   Tag,
   Building2,
   Store,
+  Package,
 } from "lucide-react";
 import { cn, formatCurrency } from "@/lib/utils";
 
 interface Props {
-  pharmacies: { id: string; name: string; clientType: string }[];
+  pharmacies: { id: string; name: string; clientType: string; governorateId: string }[];
   salesReps: { id: string; name: string; employeeCode: string }[];
-  products: { id: string; name: string; sku: string; sellingPrice: number }[];
+  products: { id: string; name: string; sku: string; unit: string; sellingPrice: number }[];
   initialClientId?: string;
 }
+
+const UpfrontPaymentItemSchema = z.object({
+  productId: z.string(),
+  paidQuantity: z.coerce.number().min(0).optional().default(0),
+  unitPrice: z.coerce.number().min(0).optional().default(0),
+});
 
 const Schema = z.object({
   pharmacyId: z.string().min(1, "اختر العميل"),
@@ -39,15 +46,19 @@ const Schema = z.object({
   type: z.nativeEnum(InvoiceType),
   manualNumber: z.string().min(1, "رقم الفاتورة مطلوب"),
   discountType: z.nativeEnum(DiscountType).default(DiscountType.PERCENTAGE),
-  discountValue: z.coerce.number().min(0).default(0),
+  discountValue: z.coerce.number().min(0).optional().default(0),
+  paidAmount: z.coerce.number().min(0).optional().default(0),
   notes: z.string().optional(),
-  amountPaidNow: z.coerce.number().min(0).optional().default(0),
+  isLegacy: z.boolean().optional().default(false),
+  issueDate: z.string().optional(),
+  // Upfront itemized payment items (for CREDIT invoices)
+  upfrontPaymentItems: z.array(UpfrontPaymentItemSchema).optional().default([]),
   items: z
     .array(
       z.object({
         productId: z.string().min(1, "اختر منتجاً"),
-        quantity: z.coerce.number().int().positive("يجب أن تكون الكمية موجبة"),
-        unitPrice: z.coerce.number().positive(),
+        quantity: z.coerce.number().positive("يجب أن تكون الكمية موجبة"),
+        unitPrice: z.coerce.number().min(0, "السعر غير صالح").optional().default(0),
       })
     )
     .min(1, "أضف منتجاً واحداً على الأقل"),
@@ -69,6 +80,7 @@ export function InvoiceForm({ pharmacies, salesReps, products, initialClientId }
     handleSubmit,
     control,
     setValue,
+    getValues,
     formState: { errors },
   } = useForm<FormData>({
     resolver: zodResolver(Schema),
@@ -77,7 +89,10 @@ export function InvoiceForm({ pharmacies, salesReps, products, initialClientId }
       pharmacyId: initialClientId || "",
       discountType: DiscountType.PERCENTAGE,
       discountValue: 0,
-      amountPaidNow: 0,
+      paidAmount: 0,
+      isLegacy: false,
+      issueDate: new Date().toISOString().split('T')[0],
+      upfrontPaymentItems: [],
       items: [{ productId: "", quantity: 1, unitPrice: 0 }],
     },
   });
@@ -86,9 +101,22 @@ export function InvoiceForm({ pharmacies, salesReps, products, initialClientId }
 
   const watchItems = useWatch({ control, name: "items" });
   const selectedType = useWatch({ control, name: "type" });
-  const amountPaidNow = useWatch({ control, name: "amountPaidNow" });
+  const upfrontPaymentItems = useWatch({ control, name: "upfrontPaymentItems" });
   const discountType = useWatch({ control, name: "discountType" });
   const discountValue = useWatch({ control, name: "discountValue" });
+  const paidAmount = useWatch({ control, name: "paidAmount" });
+  const isLegacy = useWatch({ control, name: "isLegacy" });
+
+  // Dynamically calculate and set paidAmount based on upfrontPaymentItems
+  useEffect(() => {
+    if (selectedType !== InvoiceType.CASH) {
+      const totalPaid = (upfrontPaymentItems || []).reduce(
+        (sum, item) => sum + (Number(item.paidQuantity || 0) * Number(item.unitPrice || 0)),
+        0
+      );
+      setValue('paidAmount', totalPaid, { shouldValidate: true });
+    }
+  }, [upfrontPaymentItems, selectedType, setValue]);
 
   const subtotal =
     watchItems?.reduce(
@@ -106,8 +134,12 @@ export function InvoiceForm({ pharmacies, salesReps, products, initialClientId }
 
   const total = Math.max(0, subtotal - discountAmount);
   const isCash = selectedType === InvoiceType.CASH;
-  const paidNow = isCash ? total : Number(amountPaidNow ?? 0) || 0;
-  const remainingAmount = Math.max(0, total - paidNow);
+
+  // Compute the upfront paid amount from itemized entries
+  const upfrontPaid = isCash
+    ? total
+    : Number(paidAmount || 0);
+  const remainingAmount = Math.max(0, total - upfrontPaid);
 
   const today = new Date();
   const invoiceDatePrefix = `INV-${today.getFullYear()}${String(today.getMonth() + 1).padStart(2, "0")}${String(today.getDate()).padStart(2, "0")}-`;
@@ -118,7 +150,31 @@ export function InvoiceForm({ pharmacies, salesReps, products, initialClientId }
       setValue(`items.${index}.unitPrice`, product.sellingPrice, {
         shouldValidate: true,
       });
+      // Also update the matching upfrontPaymentItem's unitPrice
+      const upfrontIdx = (upfrontPaymentItems ?? []).findIndex(
+        (pi) => pi.productId === productId
+      );
+      if (upfrontIdx >= 0) {
+        setValue(`upfrontPaymentItems.${upfrontIdx}.unitPrice`, product.sellingPrice);
+      }
     }
+  };
+
+  // When items change, sync the upfrontPaymentItems array to match
+  const syncUpfrontItems = () => {
+    const currentItems = getValues("items") ?? [];
+    const currentUpfront = getValues("upfrontPaymentItems") ?? [];
+    const newUpfront = currentItems
+      .filter((item) => item.productId)
+      .map((item) => {
+        const existing = currentUpfront.find((u) => u.productId === item.productId);
+        return {
+          productId: item.productId,
+          paidQuantity: existing?.paidQuantity || 0,
+          unitPrice: item.unitPrice || 0,
+        };
+      });
+    setValue("upfrontPaymentItems", newUpfront, { shouldValidate: true });
   };
 
   const filteredClients =
@@ -133,30 +189,94 @@ export function InvoiceForm({ pharmacies, salesReps, products, initialClientId }
         ...data,
         discountType: data.discountType ?? DiscountType.PERCENTAGE,
         discountValue: data.discountValue ?? 0,
-        amountPaidNow: data.amountPaidNow ?? 0,
+        paidAmount: data.paidAmount ?? 0,
+        isLegacy: data.isLegacy ?? false,
+        issueDate: data.isLegacy && data.issueDate ? new Date(data.issueDate) : undefined,
+        upfrontPaymentItems: (data.upfrontPaymentItems ?? []).filter(
+          (pi) => (pi.paidQuantity ?? 0) > 0
+        ).map((pi) => ({
+          ...pi,
+          paidQuantity: pi.paidQuantity ?? 0,
+          unitPrice: pi.unitPrice ?? 0,
+        })),
+        items: data.items.map(item => ({
+          ...item,
+          unitPrice: item.unitPrice ?? 0,
+        })),
       });
       if (result.success) {
         router.push(`/dashboard/sales/${result.data.id}`);
         router.refresh();
       } else {
         setServerError(result.error);
+        window.scrollTo({ top: 0, behavior: "smooth" });
       }
     });
+  };
+
+  const onError = (errors: any) => {
+    console.error("Form Validation Errors:", errors);
+    let errorMessages: string[] = [];
+
+    const extractErrors = (obj: any, path: string = "") => {
+      if (!obj) return;
+      if (obj.message) {
+        errorMessages.push(`الحقل ${path}: ${obj.message}`);
+      } else if (Array.isArray(obj)) {
+        obj.forEach((item, index) => extractErrors(item, `${path}[${index}]`));
+      } else if (typeof obj === "object") {
+        Object.keys(obj).forEach(key => extractErrors(obj[key], path ? `${path}.${key}` : key));
+      }
+    };
+
+    extractErrors(errors);
+    
+    const msg = errorMessages.length > 0 ? errorMessages.join(" | ") : "تأكد من صحة البيانات المدخلة";
+    setServerError(`خطأ في الإدخال: ${msg}`);
+    window.scrollTo({ top: 0, behavior: "smooth" });
   };
 
   const inputClass =
     "w-full px-3 py-2.5 rounded-xl border border-border bg-background text-sm focus:outline-none focus:ring-2 focus:ring-primary/30";
 
   return (
-    <form onSubmit={handleSubmit(onSubmit)} className="space-y-6" dir="rtl">
+    <form onSubmit={handleSubmit(onSubmit, onError)} className="space-y-6" dir="rtl">
 
       {/* ─── Section 1: Invoice Header ─────────────────────────── */}
       <div className="bg-card border border-border rounded-xl p-5">
-        <h2 className="font-semibold text-sm mb-4 flex items-center gap-2">
-          <FileText className="w-4 h-4 text-primary" />
-          بيانات الفاتورة
+        <h2 className="font-semibold text-sm mb-4 flex items-center justify-between gap-2">
+          <div className="flex items-center gap-2">
+            <FileText className="w-4 h-4 text-primary" />
+            بيانات الفاتورة
+          </div>
+          <div className="flex items-center gap-2">
+            <label className="text-xs font-semibold cursor-pointer text-amber-600 dark:text-amber-500 flex items-center gap-2 bg-amber-50 dark:bg-amber-900/10 px-3 py-1.5 rounded-lg border border-amber-200 dark:border-amber-900/50">
+              تسجيل مديونية/فاتورة سابقة
+              <input
+                type="checkbox"
+                {...register("isLegacy")}
+                className="w-4 h-4 text-amber-500 rounded focus:ring-amber-500 border-amber-300"
+              />
+            </label>
+          </div>
         </h2>
         <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+
+          {isLegacy && (
+            <div className="space-y-1.5 md:col-span-2 bg-amber-50/50 dark:bg-amber-900/5 p-4 rounded-xl border border-amber-100 dark:border-amber-900/30">
+              <label className="text-sm font-bold text-amber-800 dark:text-amber-400">
+                تاريخ الفاتورة السابقة
+              </label>
+              <p className="text-xs text-amber-700/80 dark:text-amber-500/80 mb-2">
+                لن يتم خصم المخزون لهذه الفاتورة، ولن تحتسب ضمن أهداف المندوبين.
+              </p>
+              <input
+                type="date"
+                {...register("issueDate")}
+                className={cn(inputClass, "border-amber-200 dark:border-amber-900/50")}
+              />
+            </div>
+          )}
 
           {/* Invoice Type Toggle */}
           <div className="space-y-1.5 md:col-span-2">
@@ -220,9 +340,6 @@ export function InvoiceForm({ pharmacies, salesReps, products, initialClientId }
             {errors.manualNumber && (
               <p className="text-red-500 text-xs">{errors.manualNumber.message}</p>
             )}
-            <p className="text-xs text-muted-foreground">
-              رقم الفاتورة النهائي سيكون: <span className="font-mono font-medium text-foreground">{invoiceDatePrefix}???</span>
-            </p>
           </div>
 
           {/* Client Type Filter + Client Select */}
@@ -289,7 +406,9 @@ export function InvoiceForm({ pharmacies, salesReps, products, initialClientId }
           <h2 className="font-semibold text-sm">الأصناف (المنتجات)</h2>
           <button
             type="button"
-            onClick={() => append({ productId: "", quantity: 1, unitPrice: 0 })}
+            onClick={() => {
+              append({ productId: "", quantity: 1, unitPrice: 0 });
+            }}
             className="flex items-center gap-1.5 text-sm text-primary hover:underline"
           >
             <Plus className="w-4 h-4" /> إضافة صنف
@@ -309,6 +428,7 @@ export function InvoiceForm({ pharmacies, salesReps, products, initialClientId }
                   onChange={(e) => {
                     register(`items.${index}.productId`).onChange(e);
                     handleProductChange(index, e.target.value);
+                    setTimeout(syncUpfrontItems, 0);
                   }}
                   className={inputClass}
                 >
@@ -319,18 +439,14 @@ export function InvoiceForm({ pharmacies, salesReps, products, initialClientId }
                     </option>
                   ))}
                 </select>
-                {(errors.items as Record<number, { productId?: { message?: string } }>)?.[index]?.productId && (
-                  <p className="text-red-500 text-xs mt-1">
-                    {(errors.items as Record<number, { productId?: { message?: string } }>)[index]?.productId?.message}
-                  </p>
-                )}
               </div>
 
               <div className="col-span-4 sm:col-span-2">
                 <label className="text-xs text-muted-foreground mb-1 block">الكمية</label>
                 <input
                   type="number"
-                  min={1}
+                  min={0}
+                  step="any"
                   {...register(`items.${index}.quantity`)}
                   className={cn(inputClass, "text-center")}
                 />
@@ -341,8 +457,9 @@ export function InvoiceForm({ pharmacies, salesReps, products, initialClientId }
                 <input
                   type="number"
                   step="0.01"
-                  {...register(`items.${index}.unitPrice`)}
-                  className={cn(inputClass, "text-center")}
+                  {...register(`items.${index}.unitPrice`, { valueAsNumber: true })}
+                  className={cn(inputClass, "text-center bg-muted/50")}
+                  readOnly
                 />
               </div>
 
@@ -362,7 +479,10 @@ export function InvoiceForm({ pharmacies, salesReps, products, initialClientId }
                 {fields.length > 1 && (
                   <button
                     type="button"
-                    onClick={() => remove(index)}
+                    onClick={() => {
+                      remove(index);
+                      setTimeout(syncUpfrontItems, 0);
+                    }}
                     className="p-2 rounded-lg text-muted-foreground hover:text-red-500 hover:bg-red-50 transition-colors"
                   >
                     <Trash2 className="w-4 h-4" />
@@ -499,32 +619,93 @@ export function InvoiceForm({ pharmacies, salesReps, products, initialClientId }
             <div className="flex items-center gap-2 mb-4">
               <CreditCard className="w-4 h-4 text-amber-600" />
               <h3 className="font-semibold text-sm text-amber-800 dark:text-amber-400">
-                الدفع الآجل — تسوية مالية
+                الدفع الآجل — دفعة مقدمة بالكميات (اختياري)
               </h3>
             </div>
-            <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
-              <div className="space-y-1.5">
-                <label className="text-sm font-medium text-foreground">
-                  المبلغ المدفوع حالياً (ج.م)
-                </label>
-                <input
-                  type="number"
-                  step="0.01"
-                  min={0}
-                  max={total}
-                  {...register("amountPaidNow")}
-                  placeholder="0.00"
-                  className="w-full px-3 py-2.5 rounded-xl border border-amber-300 dark:border-amber-700 bg-background text-sm focus:outline-none focus:ring-2 focus:ring-amber-400/30"
-                />
-                <p className="text-xs text-muted-foreground">اتركه 0 إذا لم يُدفع أي مبلغ الآن</p>
-              </div>
 
+            {/* Upfront itemized payment by product */}
+            {(upfrontPaymentItems ?? []).some((item) => item.productId) ? (
+              <div className="space-y-3">
+                <p className="text-xs text-amber-700 dark:text-amber-500">
+                  حدد الكمية المراد دفعها مقدماً لكل منتج (اتركها 0 إذا لم يُدفع شيء الآن):
+                </p>
+                {(upfrontPaymentItems ?? []).map((upfrontItem, index) => {
+                  if (!upfrontItem.productId) return null;
+                  const product = products.find((p) => p.id === upfrontItem.productId);
+                  const relatedWatchItem = (watchItems ?? []).find(i => i.productId === upfrontItem.productId);
+                  const maxQty = relatedWatchItem?.quantity || 0;
+                  const upfrontQty = upfrontItem.paidQuantity || 0;
+                  const lineAmount = upfrontQty * (upfrontItem.unitPrice || 0);
+
+                  return (
+                    <div
+                      key={index}
+                      className={cn(
+                        "flex items-center justify-between gap-3 p-3 rounded-xl border transition-colors",
+                        upfrontQty > 0
+                          ? "border-amber-400/50 bg-amber-50/50 dark:bg-amber-900/10"
+                          : "border-border/40 bg-background/50"
+                      )}
+                    >
+                      <div className="flex-1 min-w-0">
+                        <p className="font-medium text-sm text-foreground truncate">
+                          {product?.name ?? upfrontItem.productId}
+                        </p>
+                        <p className="text-xs text-muted-foreground">
+                          إجمالي الصنف: {maxQty} {product?.unit ?? "وحدة"} ×{" "}
+                          {formatCurrency((upfrontItem.unitPrice || 0).toString())}
+                        </p>
+                      </div>
+                      <div className="flex flex-col items-end gap-1 shrink-0">
+                        <input
+                          type="number"
+                          min={0}
+                          max={maxQty}
+                          step="any"
+                          {...register(`upfrontPaymentItems.${index}.paidQuantity`, { valueAsNumber: true })}
+                          placeholder="0"
+                          className="w-24 px-2 py-1.5 text-center text-sm rounded-lg border border-amber-300 dark:border-amber-700 bg-background focus:outline-none focus:ring-2 focus:ring-amber-400/30"
+                        />
+                        <p className="text-[10px] text-muted-foreground">
+                          من {maxQty} {product?.unit ?? "وحدة"}
+                        </p>
+                        {upfrontQty > 0 && (
+                          <p className="text-[11px] font-semibold text-amber-700 dark:text-amber-400">
+                            = {formatCurrency(lineAmount.toString())}
+                          </p>
+                        )}
+                      </div>
+                      {/* Hidden fields to sync productId and unitPrice */}
+                      <input type="hidden" {...register(`upfrontPaymentItems.${index}.productId`)} value={upfrontItem.productId} />
+                      <input type="hidden" {...register(`upfrontPaymentItems.${index}.unitPrice`, { valueAsNumber: true })} value={upfrontItem.unitPrice || 0} />
+                    </div>
+                  );
+                })}
+              </div>
+            ) : (
+              <div className="flex items-center gap-2 p-3 rounded-xl border border-border/40 bg-background/50 text-xs text-muted-foreground">
+                <Package className="w-4 h-4" />
+                أضف منتجات في الأصناف أولاً لتظهر خيارات الدفع المقدم
+              </div>
+            )}
+
+            {/* Summary */}
+            <div className="mt-4 grid grid-cols-1 sm:grid-cols-3 gap-4">
               <div className="space-y-1.5">
                 <label className="text-sm font-medium text-muted-foreground">
                   إجمالي الفاتورة
                 </label>
                 <div className="w-full px-3 py-2.5 rounded-xl border border-border bg-muted/50 text-sm font-semibold text-foreground">
                   {formatCurrency(total.toString())}
+                </div>
+              </div>
+
+              <div className="space-y-1.5">
+                <label className="text-sm font-medium text-amber-700 dark:text-amber-400">
+                  المدفوع مقدماً
+                </label>
+                <div className="w-full px-3 py-2.5 rounded-xl border border-amber-300 dark:border-amber-700 bg-background text-sm font-semibold text-amber-700 dark:text-amber-400">
+                  {formatCurrency(upfrontPaid.toString())}
                 </div>
               </div>
 
@@ -542,7 +723,7 @@ export function InvoiceForm({ pharmacies, salesReps, products, initialClientId }
                 >
                   {formatCurrency(remainingAmount.toString())}
                 </div>
-                {remainingAmount === 0 && paidNow > 0 && (
+                {remainingAmount === 0 && upfrontPaid > 0 && (
                   <p className="text-xs text-green-600 font-medium">✓ مدفوع بالكامل</p>
                 )}
               </div>

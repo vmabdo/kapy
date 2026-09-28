@@ -74,7 +74,7 @@ export default async function InventoryPage() {
                   key={item.id}
                   className="text-xs bg-amber-100 dark:bg-amber-900/30 text-amber-700 dark:text-amber-400 px-2 py-1 rounded-md"
                 >
-                  {item.product.name} ({item.quantity} متبقي)
+                  {item.product.name} ({Number(item.quantity).toFixed(2)} متبقي)
                 </span>
               ))}
               {lowStockItems.length > 5 && (
@@ -162,7 +162,7 @@ function WarehouseCard({
   isMain?: boolean;
 }) {
   const totalProducts = warehouse._count.stockItems;
-  const totalUnits = warehouse.stockItems.reduce((s, i) => s + i.quantity, 0);
+  const totalUnits = warehouse.stockItems.reduce((s, i) => s + Number(i.quantity), 0);
   const manager = warehouse.managers[0];
 
   return (

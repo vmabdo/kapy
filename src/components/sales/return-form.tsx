@@ -11,7 +11,7 @@ import { createPortal } from "react-dom";
 
 const ReturnItemSchema = z.object({
   productId: z.string().min(1),
-  quantity: z.coerce.number().int().positive("الكمية يجب أن تكون أكبر من 0"),
+  quantity: z.coerce.number().positive("الكمية يجب أن تكون أكبر من 0"),
 });
 
 export const ProcessReturnSchema = z.object({
@@ -171,8 +171,9 @@ export function ReturnForm({ invoiceId, invoiceItems }: Props) {
                           </div>
                           <input 
                             type="number" 
-                            min={1} 
+                            min={0.001} 
                             max={maxQuantity}
+                            step="any"
                             className="flex h-9 w-full rounded-md border border-input bg-transparent px-3 py-1 text-sm focus:outline-none focus:ring-1 focus:ring-primary/50"
                             {...form.register(`items.${index}.quantity`)}
                           />

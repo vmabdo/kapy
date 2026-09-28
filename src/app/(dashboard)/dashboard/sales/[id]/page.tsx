@@ -39,15 +39,15 @@ export default async function InvoiceDetailPage({ params }: Props) {
   const itemCalculations = invoice.items.reduce((acc: any, item) => {
     const returnedQty = invoice.returns.reduce((sum: number, ret: any) => {
       const returnItem = ret.items.find((i: any) => i.productId === item.productId);
-      return sum + (returnItem ? returnItem.quantity : 0);
+      return sum + (returnItem ? Number(returnItem.quantity) : 0);
     }, 0);
     
     const paidQty = invoice.payments.reduce((sum: number, pay: any) => {
       const payItem = pay.paymentItems?.find((i: any) => i.productId === item.productId);
-      return sum + (payItem ? payItem.paidQuantity : 0);
+      return sum + (payItem ? Number(payItem.paidQuantity) : 0);
     }, 0);
 
-    const netQty = item.quantity - returnedQty;
+    const netQty = Number(item.quantity) - returnedQty;
     const pendingQty = Math.max(0, netQty - paidQty);
     
     acc[item.id] = { returnedQty, netQty, paidQty, pendingQty };
@@ -61,7 +61,7 @@ export default async function InvoiceDetailPage({ params }: Props) {
     productName: item.product.name,
     productSku: item.product.sku,
     productUnit: item.product.unit,
-    quantity: item.quantity,
+    quantity: Number(item.quantity),
     unitPrice: Number(item.unitPrice),
     lineTotal: Number(item.lineTotal),
   }));
@@ -160,7 +160,7 @@ export default async function InvoiceDetailPage({ params }: Props) {
                         <p className="font-medium text-foreground">{item.product.name}</p>
                         <p className="text-xs text-muted-foreground font-mono">{item.product.sku}</p>
                       </td>
-                      <td className="px-4 py-3 text-center">{item.quantity} {item.product.unit}</td>
+                      <td className="px-4 py-3 text-center">{Number(item.quantity).toFixed(2)} {item.product.unit}</td>
                       <td className="px-4 py-3 text-center font-semibold text-primary">
                         {calc.netQty} {item.product.unit}
                         {calc.returnedQty > 0 && <span className="block text-[10px] text-red-500 font-normal">(-{calc.returnedQty} مرتجع)</span>}

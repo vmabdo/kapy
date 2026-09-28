@@ -6,14 +6,20 @@ import { revalidatePath } from "next/cache";
 import { DiscountType, InvoiceStatus, InvoiceType, UserRole, TransactionType, TransactionCategory } from "@prisma/client";
 import { z } from "zod";
 import { addDays, format } from "date-fns";
-import { getRepProductCurrentQty } from "@/actions/rep-custody";
 
 // ─── Schemas ──────────────────────────────────────────────────
 
 const InvoiceItemSchema = z.object({
   productId: z.string().min(1),
-  quantity: z.coerce.number().int().positive("الكمية يجب أن تكون أكبر من 0"),
-  unitPrice: z.coerce.number().positive("السعر يجب أن يكون أكبر من 0"),
+  quantity: z.coerce.number().positive("الكمية يجب أن تكون أكبر من 0"),
+  unitPrice: z.coerce.number().min(0, "السعر يجب أن يكون صحيحاً").optional().default(0),
+});
+
+// Upfront itemized payment item (for CREDIT invoices)
+const UpfrontPaymentItemSchema = z.object({
+  productId: z.string().min(1),
+  paidQuantity: z.coerce.number().min(0).optional().default(0),
+  unitPrice: z.coerce.number().min(0).optional().default(0),
 });
 
 const CreateInvoiceSchema = z.object({
@@ -23,15 +29,18 @@ const CreateInvoiceSchema = z.object({
   notes: z.string().optional(),
   manualNumber: z.string().min(1, "رقم الفاتورة مطلوب"),
   discountType: z.nativeEnum(DiscountType).default(DiscountType.PERCENTAGE),
-  discountValue: z.coerce.number().min(0).default(0),
-  // Amount paid now (only applicable for CREDIT invoices with upfront partial payment)
-  amountPaidNow: z.coerce.number().min(0).default(0),
+  discountValue: z.coerce.number().min(0).optional().default(0),
+  paidAmount: z.coerce.number().min(0).optional().default(0),
+  isLegacy: z.boolean().optional().default(false),
+  issueDate: z.coerce.date().optional(),
+  // Upfront itemized payment (only for CREDIT invoices — by product quantity)
+  upfrontPaymentItems: z.array(UpfrontPaymentItemSchema).optional().default([]),
   items: z.array(InvoiceItemSchema).min(1, "أضف منتجاً واحداً على الأقل"),
 });
 
 const RecordPaymentSchema = z.object({
   invoiceId: z.string().min(1),
-  amount: z.coerce.number().positive("المبلغ يجب أن يكون أكبر من 0"),
+  amount: z.coerce.number().min(0).default(0),
   method: z.enum(["CASH", "BANK_TRANSFER", "CHECK"]).default("CASH"),
   referenceNo: z.string().optional(),
   notes: z.string().optional(),
@@ -41,7 +50,7 @@ const RecordPaymentSchema = z.object({
       z.object({
         productId: z.string().min(1),
         invoiceItemId: z.string().min(1),
-        paidQuantity: z.coerce.number().int().positive(),
+        paidQuantity: z.coerce.number().positive(),
         unitPrice: z.coerce.number().positive(),
       })
     )
@@ -57,7 +66,7 @@ const SetRepMonthlyTargetSchema = z.object({
   items: z.array(
     z.object({
       productId: z.string().min(1),
-      targetQuantity: z.coerce.number().int().positive("الكمية يجب أن تكون أكبر من 0"),
+      targetQuantity: z.coerce.number().positive("الكمية يجب أن تكون أكبر من 0"),
     })
   ).min(1, "أضف منتجاً واحداً على الأقل"),
 });
@@ -91,20 +100,51 @@ export async function createInvoice(
       return { success: false, error: `رقم الفاتورة "${invoiceNumber}" موجود بالفعل. اختر رقماً مختلفاً.` };
     }
 
-    // ── CRITICAL: Validate rep custody stock before any writes ──
-    // When a salesRepId is set, check that the rep has sufficient
-    // custody quantities for all products in the invoice.
-    if (data.salesRepId) {
+    // ── CRITICAL: Find SUB-warehouse in client's governorate ──
+    const pharmacy = await prisma.pharmacy.findUnique({
+      where: { id: data.pharmacyId },
+      select: { governorateId: true, name: true },
+    });
+    if (!pharmacy) {
+      return { success: false, error: "العميل غير موجود" };
+    }
+
+    const subWarehouse = await prisma.warehouse.findFirst({
+      where: {
+        type: "SUB",
+        governorateId: pharmacy.governorateId,
+        isActive: true,
+      },
+    });
+
+    if (!subWarehouse) {
+      const governorate = await prisma.governorate.findUnique({
+        where: { id: pharmacy.governorateId },
+        select: { name: true },
+      });
+      return {
+        success: false,
+        error: `لا يوجد مخزن فرعي (SUB) في محافظة "${governorate?.name ?? pharmacy.governorateId}". يرجى إنشاء مخزن فرعي في نفس محافظة العميل أولاً.`,
+      };
+    }
+
+    // ── Validate warehouse stock availability ──
+    if (!data.isLegacy) {
       for (const item of data.items) {
-        const available = await getRepProductCurrentQty(data.salesRepId, item.productId);
+        const stockItem = await prisma.stockItem.findUnique({
+          where: {
+            warehouseId_productId: {
+              warehouseId: subWarehouse.id,
+              productId: item.productId,
+            },
+          },
+          include: { product: { select: { name: true } } },
+        });
+        const available = Number(stockItem?.quantity ?? 0) - Number(stockItem?.reservedQty ?? 0);
         if (available < item.quantity) {
-          const product = await prisma.product.findUnique({
-            where: { id: item.productId },
-            select: { name: true },
-          });
           return {
             success: false,
-            error: `المندوب لا يملك كمية كافية من "${product?.name ?? item.productId}" في عهدته. المتاح: ${available}، المطلوب: ${item.quantity}`,
+            error: `المخزون غير كافٍ في مخزن "${subWarehouse.name}" للمنتج "${stockItem?.product.name ?? item.productId}". المتاح: ${available}، المطلوب: ${item.quantity}`,
           };
         }
       }
@@ -139,7 +179,23 @@ export async function createInvoice(
 
     // Determine initial payment state
     const isCash = data.type === InvoiceType.CASH;
-    const amountPaidNow = isCash ? totalAmount : Math.min(data.amountPaidNow, totalAmount);
+
+    // Calculate upfront amount from itemized items (for CREDIT invoices)
+    let amountPaidNow = 0;
+    const activeUpfrontItems = (data.upfrontPaymentItems ?? []).filter(
+      (pi) => pi.paidQuantity > 0
+    );
+
+    if (isCash) {
+      amountPaidNow = totalAmount;
+    } else if (activeUpfrontItems.length > 0) {
+      amountPaidNow = activeUpfrontItems.reduce(
+        (sum, pi) => sum + pi.paidQuantity * pi.unitPrice,
+        0
+      );
+    }
+
+    amountPaidNow = Math.min(amountPaidNow, totalAmount);
     const remainingAmount = totalAmount - amountPaidNow;
 
     let initialStatus: InvoiceStatus;
@@ -170,6 +226,8 @@ export async function createInvoice(
           creditDays: data.type === InvoiceType.CREDIT ? creditDays : null,
           dueDate,
           notes: data.notes,
+          isLegacy: data.isLegacy,
+          invoiceDate: data.isLegacy && data.issueDate ? data.issueDate : undefined,
           items: {
             create: data.items.map((item) => ({
               productId: item.productId,
@@ -181,7 +239,39 @@ export async function createInvoice(
         },
       });
 
-      // 2. If there is an upfront payment, create a Payment record
+      // 2. Deduct stock from the sub-warehouse of the client's governorate
+      if (!data.isLegacy) {
+        for (const item of data.items) {
+          await tx.stockItem.update({
+            where: {
+              warehouseId_productId: {
+                warehouseId: subWarehouse.id,
+                productId: item.productId,
+              },
+            },
+            data: { quantity: { decrement: item.quantity } },
+          });
+        }
+
+        // 3. Record stock movement for audit trail
+        await tx.stockMovement.create({
+          data: {
+            movementType: "OUTBOUND",
+            source: "PHARMACY",
+            sourceWarehouseId: subWarehouse.id,
+            salesRepId: data.salesRepId,
+            notes: `صرف للفاتورة ${invoiceNumber}`,
+            items: {
+              create: data.items.map((item) => ({
+                productId: item.productId,
+                quantity: item.quantity,
+              })),
+            },
+          },
+        });
+      }
+
+      // 4. If there is an upfront payment, create a Payment record
       if (amountPaidNow > 0) {
         const payment = await tx.payment.create({
           data: {
@@ -189,18 +279,34 @@ export async function createInvoice(
             pharmacyId: data.pharmacyId,
             amount: amountPaidNow,
             method: "CASH",
-            notes: isCash ? "دفع نقدي عند إصدار الفاتورة" : "دفعة مقدمة عند إصدار الفاتورة آجل",
+            notes: isCash
+              ? "دفع نقدي عند إصدار الفاتورة"
+              : "دفعة مقدمة عند إصدار الفاتورة آجل",
           },
         });
 
-        // 2.1 Sync with Treasury
+        // 4.1 Add itemized payment items for upfront credit payment
+        if (!isCash && activeUpfrontItems.length > 0) {
+          await tx.paymentItem.createMany({
+            data: activeUpfrontItems.map((pi) => ({
+              paymentId: payment.id,
+              productId: pi.productId,
+              paidQuantity: pi.paidQuantity,
+              unitPrice: pi.unitPrice,
+            })),
+          });
+        }
+
+        // 4.2 Sync with Treasury
         let treasury = await tx.treasury.findFirst();
         if (!treasury) {
-          treasury = await tx.treasury.create({ data: { name: "الخزينة الرئيسية", currentBalance: 0 } });
+          treasury = await tx.treasury.create({
+            data: { name: "الخزينة الرئيسية", currentBalance: 0 },
+          });
         }
-        
+
         const newBalance = Number(treasury.currentBalance) + amountPaidNow;
-        
+
         await tx.treasury.update({
           where: { id: treasury.id },
           data: { currentBalance: newBalance },
@@ -215,11 +321,11 @@ export async function createInvoice(
             balanceAfter: newBalance,
             description: `تحصيل فاتورة رقم ${invoiceNumber}`,
             paymentId: payment.id,
-          }
+          },
         });
       }
 
-      // 3. Update Client Balance — only for the outstanding credit portion
+      // 5. Update Client Balance — only for the outstanding credit portion
       if (data.type === InvoiceType.CREDIT && remainingAmount > 0) {
         await tx.pharmacy.update({
           where: { id: data.pharmacyId },
@@ -227,98 +333,67 @@ export async function createInvoice(
         });
       }
 
-      // 4. Update Pharmacy Target Progress
-      const currentMonth = new Date();
-      const targetPeriod = await tx.pharmacyTargetPeriod.findFirst({
-        where: {
-          pharmacyId: data.pharmacyId,
-          periodYear: currentMonth.getFullYear(),
-          periodMonth: currentMonth.getMonth() + 1,
-        },
-      });
-
-      if (targetPeriod) {
-        const updatedTarget = await tx.pharmacyTargetPeriod.update({
-          where: { id: targetPeriod.id },
-          data: { achieved: { increment: totalAmount } },
-          include: { pharmacy: { select: { name: true } } },
+      // 6. Update Pharmacy Target Progress
+      if (!data.isLegacy) {
+        const currentMonth = new Date();
+        const targetPeriod = await tx.pharmacyTargetPeriod.findFirst({
+          where: {
+            pharmacyId: data.pharmacyId,
+            periodYear: currentMonth.getFullYear(),
+            periodMonth: currentMonth.getMonth() + 1,
+          },
         });
 
-        const currentAchieved = Number(updatedTarget.achieved);
-        const targetGoal = Number(updatedTarget.target);
-        if (
-          currentAchieved >= targetGoal &&
-          currentAchieved - totalAmount < targetGoal
-        ) {
-          await tx.alert.create({
-            data: {
-              type: "PHARMACY_TARGET_REACHED",
-              pharmacyId: data.pharmacyId,
-              title: "تحقيق الهدف الشهري!",
-              message: `حققت "${updatedTarget.pharmacy.name}" الهدف الشهري بنجاح (${targetGoal} ج.م)`,
-            },
+        if (targetPeriod) {
+          const updatedTarget = await tx.pharmacyTargetPeriod.update({
+            where: { id: targetPeriod.id },
+            data: { achieved: { increment: totalAmount } },
+            include: { pharmacy: { select: { name: true } } },
           });
-        }
-      }
 
-      // 5. Update Rep Monthly Product Targets (achievedQuantity)
-      const now = new Date();
-      const repMonthlyTarget = await tx.repMonthlyTarget.findUnique({
-        where: {
-          salesRepId_month_year: {
-            salesRepId: data.salesRepId,
-            month: now.getMonth() + 1,
-            year: now.getFullYear(),
-          },
-        },
-        include: { items: true },
-      });
-
-      if (repMonthlyTarget) {
-        for (const invoiceItem of data.items) {
-          const targetItem = repMonthlyTarget.items.find(
-            (ti) => ti.productId === invoiceItem.productId
-          );
-          if (targetItem) {
-            await tx.repMonthlyTargetItem.update({
-              where: { id: targetItem.id },
-              data: { achievedQuantity: { increment: invoiceItem.quantity } },
+          const currentAchieved = Number(updatedTarget.achieved);
+          const targetGoal = Number(updatedTarget.target);
+          if (
+            currentAchieved >= targetGoal &&
+            currentAchieved - totalAmount < targetGoal
+          ) {
+            await tx.alert.create({
+              data: {
+                type: "PHARMACY_TARGET_REACHED",
+                pharmacyId: data.pharmacyId,
+                title: "تحقيق الهدف الشهري!",
+                message: `حققت "${updatedTarget.pharmacy.name}" الهدف الشهري بنجاح (${targetGoal} ج.م)`,
+              },
             });
           }
         }
       }
 
-      // 6. Deduct sold quantities from the rep's custody (RepInventoryItem)
-      //    using FIFO across all open batches.
-      if (data.salesRepId) {
-        for (const invoiceItem of data.items) {
-          let remaining = invoiceItem.quantity;
-
-          // Fetch open batch items for this product (oldest batch first)
-          const openItems = await tx.repInventoryItem.findMany({
-            where: {
-              productId: invoiceItem.productId,
-              currentQty: { gt: 0 },
-              repInventory: {
-                salesRepId: data.salesRepId,
-                closedAt: null,
-              },
+      // 7. Update Rep Monthly Product Targets (achievedQuantity)
+      if (!data.isLegacy) {
+        const now = new Date();
+        const repMonthlyTarget = await tx.repMonthlyTarget.findUnique({
+          where: {
+            salesRepId_month_year: {
+              salesRepId: data.salesRepId,
+              month: now.getMonth() + 1,
+              year: now.getFullYear(),
             },
-            include: { repInventory: { select: { issuedAt: true } } },
-            orderBy: { repInventory: { issuedAt: "asc" } },
-          });
+          },
+          include: { items: true },
+        });
 
-          for (const batchItem of openItems) {
-            if (remaining <= 0) break;
-            const deduct = Math.min(batchItem.currentQty, remaining);
-            await tx.repInventoryItem.update({
-              where: { id: batchItem.id },
-              data: {
-                soldQty: { increment: deduct },
-                currentQty: { decrement: deduct },
-              },
-            });
-            remaining -= deduct;
+        if (repMonthlyTarget) {
+          for (const invoiceItem of data.items) {
+            const targetItem = repMonthlyTarget.items.find(
+              (ti) => ti.productId === invoiceItem.productId
+            );
+            if (targetItem) {
+              await tx.repMonthlyTargetItem.update({
+                where: { id: targetItem.id },
+                data: { achievedQuantity: { increment: invoiceItem.quantity } },
+              });
+            }
           }
         }
       }
@@ -406,11 +481,13 @@ export async function recordInvoicePayment(
       // 2.1 Sync with Treasury
       let treasury = await tx.treasury.findFirst();
       if (!treasury) {
-        treasury = await tx.treasury.create({ data: { name: "الخزينة الرئيسية", currentBalance: 0 } });
+        treasury = await tx.treasury.create({
+          data: { name: "الخزينة الرئيسية", currentBalance: 0 },
+        });
       }
-      
+
       const newBalance = Number(treasury.currentBalance) + amount;
-      
+
       await tx.treasury.update({
         where: { id: treasury.id },
         data: { currentBalance: newBalance },
@@ -425,7 +502,7 @@ export async function recordInvoicePayment(
           balanceAfter: newBalance,
           description: `تحصيل دفعة لفاتورة رقم ${invoice.invoiceNumber}`,
           paymentId: payment.id,
-        }
+        },
       });
 
       // 3. If itemized, create PaymentItem records

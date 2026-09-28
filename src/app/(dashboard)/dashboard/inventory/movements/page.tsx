@@ -70,7 +70,7 @@ export default async function MovementsPage() {
               <tbody>
                 {movements.map((movement) => {
                   const typeInfo = MOVEMENT_LABELS[movement.movementType];
-                  const totalUnits = movement.items.reduce((s, i) => s + i.quantity, 0);
+                  const totalUnits = movement.items.reduce((s, i) => s + Number(i.quantity), 0);
                   const fromLabel = movement.supplier?.name ?? movement.sourceWarehouse?.name ?? movement.salesRep?.name ?? "—";
                   const toLabel = movement.targetWarehouse?.name ?? movement.salesRep?.name ?? "—";
 

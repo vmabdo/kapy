@@ -61,7 +61,7 @@ const Schema = z.object({
     .array(
       z.object({
         productId: z.string().min(1, "اختر منتجاً"),
-        quantity: z.coerce.number().int().positive("كمية صحيحة مطلوبة"),
+        quantity: z.coerce.number().positive("كمية صحيحة مطلوبة"),
         unitCost: z.coerce.number().optional(),
         batchNumber: z.string().optional(),
       })
@@ -321,7 +321,8 @@ export function StockMovementForm({ warehouses, products, salesReps, suppliers, 
                 {index === 0 && <label className="text-xs text-muted-foreground mb-1 block">الكمية</label>}
                 <input
                   type="number"
-                  min={1}
+                  min={0.001}
+                  step="any"
                   {...register(`items.${index}.quantity`)}
                   className="w-full px-3 py-2.5 rounded-xl border border-border bg-background text-sm focus:outline-none focus:ring-2 focus:ring-primary/30 text-center"
                 />

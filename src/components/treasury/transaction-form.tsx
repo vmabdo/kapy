@@ -5,7 +5,7 @@ import { useRouter } from "next/navigation";
 import { useForm } from "react-hook-form";
 import { zodResolver } from "@hookform/resolvers/zod";
 import { z } from "zod";
-import { TransactionType } from "@prisma/client";
+import { TransactionType, TransactionCategory } from "@prisma/client";
 import { recordTreasuryTransaction } from "@/actions/treasury";
 import { Wallet, Loader2, ArrowDown, ArrowUp } from "lucide-react";
 import { cn, formatCurrency } from "@/lib/utils";
@@ -17,18 +17,34 @@ interface Props {
 const Schema = z.object({
   type: z.nativeEnum(TransactionType),
   amount: z.coerce.number().positive("المبلغ يجب أن يكون أكبر من 0"),
-  category: z.string().min(1, "اختر تصنيف المعاملة"),
-  reference: z.string().optional(),
-  notes: z.string().optional(),
+  category: z.nativeEnum(TransactionCategory),
+  referenceNo: z.string().optional(),
+  description: z.string().optional(),
 });
 
 type FormData = z.infer<typeof Schema>;
 
-const CATEGORIES = {
-  CASH_IN: ["مبيعات نقدية", "تحصيل مديونية", "رأس مال", "أخرى"],
-  CASH_OUT: ["مصروفات تشغيل", "رواتب", "مدفوعات موردين", "إيجار", "أخرى"],
-  TRANSFER_IN: ["تحويل داخلي"],
-  TRANSFER_OUT: ["تحويل داخلي"],
+const CATEGORIES: Record<string, { label: string; value: TransactionCategory }[]> = {
+  CASH_IN: [
+    { label: "مبيعات نقدية", value: TransactionCategory.INVOICE_PAYMENT },
+    { label: "تحصيل مديونية", value: TransactionCategory.INVOICE_PAYMENT },
+    { label: "أخرى", value: TransactionCategory.OTHER },
+  ],
+  CASH_OUT: [
+    { label: "مصروفات تشغيل", value: TransactionCategory.OPERATING_EXPENSE },
+    { label: "رواتب", value: TransactionCategory.REP_SALARY },
+    { label: "مدفوعات موردين", value: TransactionCategory.SUPPLIER_PAYMENT },
+    { label: "إيجار مخزن", value: TransactionCategory.WAREHOUSE_EXPENSE },
+    { label: "مكافآت", value: TransactionCategory.REP_BONUS },
+    { label: "خصومات", value: TransactionCategory.REP_DEDUCTION },
+    { label: "أخرى", value: TransactionCategory.OTHER },
+  ],
+  TRANSFER_IN: [
+    { label: "تحويل داخلي", value: TransactionCategory.OTHER },
+  ],
+  TRANSFER_OUT: [
+    { label: "تحويل داخلي", value: TransactionCategory.OTHER },
+  ],
 };
 
 export function TransactionForm({ currentBalance }: Props) {
@@ -52,7 +68,7 @@ export function TransactionForm({ currentBalance }: Props) {
     startTransition(async () => {
       const result = await recordTreasuryTransaction(data);
       if (result.success) {
-        reset(); // Clear form on success
+        reset();
         router.refresh();
       } else {
         setServerError(result.error);
@@ -106,8 +122,8 @@ export function TransactionForm({ currentBalance }: Props) {
         <label className="text-sm font-medium">تصنيف المعاملة</label>
         <select {...register("category")} className={inputClass}>
           <option value="">اختر التصنيف...</option>
-          {CATEGORIES[selectedType as keyof typeof CATEGORIES]?.map((cat: string) => (
-            <option key={cat} value={cat}>{cat}</option>
+          {CATEGORIES[selectedType as keyof typeof CATEGORIES]?.map((cat) => (
+            <option key={cat.value + cat.label} value={cat.value}>{cat.label}</option>
           ))}
         </select>
         {errors.category && <p className="text-red-500 text-xs">{errors.category.message}</p>}
@@ -115,12 +131,12 @@ export function TransactionForm({ currentBalance }: Props) {
 
       <div className="space-y-1.5">
         <label className="text-sm font-medium">المرجع (اختياري)</label>
-        <input {...register("reference")} placeholder="رقم إيصال، أو سند قبض/صرف..." className={inputClass} />
+        <input {...register("referenceNo")} placeholder="رقم إيصال، أو سند قبض/صرف..." className={inputClass} />
       </div>
 
       <div className="space-y-1.5">
         <label className="text-sm font-medium">البيان / ملاحظات (اختياري)</label>
-        <textarea {...register("notes")} rows={2} className={cn(inputClass, "resize-none")} placeholder="تفاصيل إضافية..." />
+        <textarea {...register("description")} rows={2} className={cn(inputClass, "resize-none")} placeholder="تفاصيل إضافية..." />
       </div>
 
       {serverError && (

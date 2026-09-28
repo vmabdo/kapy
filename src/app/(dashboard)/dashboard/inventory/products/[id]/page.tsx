@@ -20,8 +20,8 @@ export default async function ProductDetailPage({ params }: Props) {
   const product = await getProductById(params.id);
   if (!product) notFound();
 
-  const totalStock = product.stockItems.reduce((s, i) => s + i.quantity, 0);
-  const totalReserved = product.stockItems.reduce((s, i) => s + i.reservedQty, 0);
+  const totalStock = product.stockItems.reduce((s, i) => s + Number(i.quantity), 0);
+  const totalReserved = product.stockItems.reduce((s, i) => s + Number(i.reservedQty), 0);
   const isLow = totalStock <= product.reorderLevel && product.reorderLevel > 0;
 
   return (
@@ -176,9 +176,9 @@ export default async function ProductDetailPage({ params }: Props) {
                           {item.warehouse.name}
                         </Link>
                       </td>
-                      <td className="px-4 py-3 text-center font-semibold">{item.quantity}</td>
-                      <td className="px-4 py-3 text-center text-muted-foreground">{item.reservedQty}</td>
-                      <td className="px-4 py-3 text-center font-semibold text-green-600">{item.quantity - item.reservedQty}</td>
+                      <td className="px-4 py-3 text-center font-semibold">{Number(item.quantity).toFixed(3)}</td>
+                      <td className="px-4 py-3 text-center text-muted-foreground">{Number(item.reservedQty).toFixed(3)}</td>
+                      <td className="px-4 py-3 text-center font-semibold text-green-600">{(Number(item.quantity) - Number(item.reservedQty)).toFixed(3)}</td>
                     </tr>
                   ))}
                 </tbody>

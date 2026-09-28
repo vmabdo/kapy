@@ -38,15 +38,16 @@ export default async function LowStockReportPage() {
   // Filter: items below their effective threshold
   const filtered = lowStockItems.filter((item) => {
     const threshold = item.product.reorderLevel > 0 ? item.product.reorderLevel : globalThreshold;
-    return item.quantity <= threshold;
+    return Number(item.quantity) <= threshold;
   });
 
   // Categorize severity
   const categorized = filtered.map((item) => {
     const threshold = item.product.reorderLevel > 0 ? item.product.reorderLevel : globalThreshold;
-    const pct = threshold > 0 ? (item.quantity / threshold) * 100 : 0;
+    const qty = Number(item.quantity);
+    const pct = threshold > 0 ? (qty / threshold) * 100 : 0;
     const severity: "critical" | "warning" | "caution" =
-      item.quantity === 0 ? "critical" : pct <= 30 ? "warning" : "caution";
+      qty === 0 ? "critical" : pct <= 30 ? "warning" : "caution";
     return { ...item, threshold, pct, severity };
   });
 
@@ -171,7 +172,7 @@ export default async function LowStockReportPage() {
                         item.severity === "critical" ? "text-red-600" :
                         item.severity === "warning" ? "text-amber-600" : "text-yellow-600"
                       )}>
-                        {item.quantity}
+                        {Number(item.quantity).toFixed(3)}
                       </span>
                       <span className="text-[10px] text-muted-foreground ml-1">{item.product.unit}</span>
                     </td>

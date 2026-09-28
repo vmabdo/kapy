@@ -136,7 +136,7 @@ export async function getSalesStats() {
   const [todayInvoices, monthInvoices, totalReceivables] = await Promise.all([
     // Today's total
     prisma.invoice.aggregate({
-      where: { invoiceDate: { gte: today }, status: { not: InvoiceStatus.DRAFT } },
+      where: { invoiceDate: { gte: today }, status: { not: InvoiceStatus.DRAFT }, isLegacy: false },
       _sum: { total: true },
       _count: true,
     }),
@@ -145,6 +145,7 @@ export async function getSalesStats() {
       where: {
         invoiceDate: { gte: new Date(today.getFullYear(), today.getMonth(), 1) },
         status: { not: InvoiceStatus.DRAFT },
+        isLegacy: false,
       },
       _sum: { total: true },
     }),

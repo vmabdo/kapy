@@ -20,9 +20,9 @@ export default async function WarehouseDetailPage({ params }: Props) {
   const warehouse = await getWarehouseById(params.id);
   if (!warehouse) notFound();
 
-  const totalUnits = warehouse.stockItems.reduce((s, i) => s + i.quantity, 0);
+  const totalUnits = warehouse.stockItems.reduce((s, i) => s + Number(i.quantity), 0);
   const lowStockItems = warehouse.stockItems.filter(
-    (item) => item.quantity <= item.product.reorderLevel && item.product.reorderLevel > 0
+    (item) => Number(item.quantity) <= item.product.reorderLevel && item.product.reorderLevel > 0
   );
 
   return (
@@ -99,7 +99,7 @@ export default async function WarehouseDetailPage({ params }: Props) {
             <ul className="mt-1 space-y-0.5">
               {lowStockItems.map((item) => (
                 <li key={item.id} className="text-xs text-amber-700 dark:text-amber-400">
-                  • {item.product.name} — متبقي: {item.quantity} (الحد الأدنى: {item.product.reorderLevel})
+                  • {item.product.name} — متبقي: {Number(item.quantity).toFixed(3)} (الحد الأدنى: {item.product.reorderLevel})
                 </li>
               ))}
             </ul>
@@ -137,8 +137,8 @@ export default async function WarehouseDetailPage({ params }: Props) {
               </thead>
               <tbody>
                 {warehouse.stockItems.map((item) => {
-                  const isLow = item.quantity <= item.product.reorderLevel && item.product.reorderLevel > 0;
-                  const available = item.quantity - item.reservedQty;
+                  const isLow = Number(item.quantity) <= item.product.reorderLevel && item.product.reorderLevel > 0;
+                  const available = Number(item.quantity) - Number(item.reservedQty);
                   return (
                     <tr key={item.id} className="data-table-row">
                       <td className="px-5 py-3">
@@ -149,8 +149,8 @@ export default async function WarehouseDetailPage({ params }: Props) {
                       </td>
                       <td className="px-4 py-3 text-muted-foreground">{item.product.category.name}</td>
                       <td className="px-4 py-3 text-muted-foreground">{item.product.unit}</td>
-                      <td className="px-4 py-3 text-center font-semibold">{item.quantity}</td>
-                      <td className="px-4 py-3 text-center text-muted-foreground">{item.reservedQty}</td>
+                      <td className="px-4 py-3 text-center font-semibold">{Number(item.quantity).toFixed(3)}</td>
+                      <td className="px-4 py-3 text-center text-muted-foreground">{Number(item.reservedQty).toFixed(3)}</td>
                       <td className="px-4 py-3 text-center text-muted-foreground">{item.product.reorderLevel}</td>
                       <td className="px-4 py-3 text-center">
                         {isLow ? (
