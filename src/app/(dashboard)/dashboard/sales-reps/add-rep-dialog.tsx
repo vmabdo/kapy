@@ -12,12 +12,20 @@ import { useRouter } from "next/navigation";
 const Schema = z.object({
   name: z.string().min(2, "الاسم مطلوب"),
   phone: z.string().optional(),
-  email: z.string().email("البريد الإلكتروني غير صالح"),
-  password: z.string().min(6, "كلمة المرور يجب أن تكون 6 أحرف على الأقل"),
+  /// Optional — if empty, no system login account will be created
+  email: z.string().email("البريد الإلكتروني غير صالح").optional().or(z.literal("")),
+  password: z.string().min(6, "كلمة المرور يجب أن تكون 6 أحرف على الأقل").optional().or(z.literal("")),
   baseSalary: z.coerce.number().min(0).default(0),
-  monthlyTarget: z.coerce.number().min(0).default(0),
   governorateId: z.string().optional(),
-});
+}).refine(
+  (data) => {
+    if (data.email && data.email.trim().length > 0) {
+      return data.password && data.password.trim().length >= 6;
+    }
+    return true;
+  },
+  { message: "كلمة المرور مطلوبة عند تحديد البريد الإلكتروني", path: ["password"] }
+);
 
 type FormData = z.input<typeof Schema>;
 
@@ -39,7 +47,7 @@ export function AddRepDialog({ governorates }: Props) {
     formState: { errors },
   } = useForm<FormData>({
     resolver: zodResolver(Schema),
-    defaultValues: { baseSalary: 0, monthlyTarget: 0 },
+    defaultValues: { baseSalary: 0 },
   });
 
   const inputClass = cn(
@@ -77,14 +85,19 @@ export function AddRepDialog({ governorates }: Props) {
       </button>
 
       {open && (
-        <div
-          className="fixed inset-0 z-50 flex items-center justify-center p-4"
-          style={{ background: "rgba(0,0,0,0.45)" }}
-          onClick={(e) => { if (e.target === e.currentTarget) setOpen(false); }}
-        >
-          <div className="bg-card border border-border rounded-2xl shadow-xl w-full max-w-lg max-h-[90vh] overflow-y-auto animate-scale-in" dir="rtl">
+        <>
+          {/* Backdrop */}
+          <div 
+            className="fixed inset-0 z-50 bg-black/50 backdrop-blur-sm"
+            onClick={() => setOpen(false)}
+          />
+          {/* Modal Content */}
+          <div 
+            className="fixed z-50 top-[50%] left-[50%] translate-x-[-50%] translate-y-[-50%] max-w-xl w-[95vw] max-h-[95vh] overflow-y-auto bg-card border border-border rounded-2xl shadow-xl animate-scale-in" 
+            dir="rtl"
+          >
             {/* Header */}
-            <div className="flex items-center justify-between px-5 py-4 border-b border-border/60 sticky top-0 bg-card z-10">
+            <div className="flex items-center justify-between px-4 py-3 border-b border-border/60 sticky top-0 bg-card z-10">
               <h2 className="font-bold text-base flex items-center gap-2">
                 <Users className="w-5 h-5 text-primary" />
                 إضافة مندوب مبيعات جديد
@@ -94,24 +107,22 @@ export function AddRepDialog({ governorates }: Props) {
               </button>
             </div>
 
-            <form onSubmit={handleSubmit(onSubmit)} className="p-5 space-y-4">
+            <form onSubmit={handleSubmit(onSubmit)} className="p-4 space-y-3">
               {/* Personal Info */}
-              <div className="space-y-3">
-                <p className="text-xs font-semibold text-muted-foreground uppercase tracking-wider">البيانات الشخصية</p>
-
+              <div className="space-y-2">
                 <div className="space-y-1.5">
-                  <label className="text-sm font-medium">الاسم الكامل *</label>
+                  <label className="text-xs font-medium">الاسم الكامل *</label>
                   <input {...register("name")} placeholder="اسم المندوب" className={inputClass} />
                   {errors.name && <p className="text-red-500 text-xs">{errors.name.message}</p>}
                 </div>
 
                 <div className="grid grid-cols-2 gap-3">
                   <div className="space-y-1.5">
-                    <label className="text-sm font-medium">رقم الهاتف</label>
+                    <label className="text-xs font-medium">رقم الهاتف</label>
                     <input {...register("phone")} placeholder="01xxxxxxxxx" className={inputClass} />
                   </div>
                   <div className="space-y-1.5">
-                    <label className="text-sm font-medium">المحافظة</label>
+                    <label className="text-xs font-medium">المحافظة</label>
                     <select {...register("governorateId")} className={inputClass}>
                       <option value="">اختر المحافظة</option>
                       {governorates.map((g) => (
@@ -122,67 +133,65 @@ export function AddRepDialog({ governorates }: Props) {
                 </div>
               </div>
 
-              {/* Account Info */}
-              <div className="space-y-3 pt-2 border-t border-border/50">
-                <p className="text-xs font-semibold text-muted-foreground uppercase tracking-wider">بيانات الحساب</p>
-
-                <div className="space-y-1.5">
-                  <label className="text-sm font-medium">البريد الإلكتروني (للدخول) *</label>
-                  <input {...register("email")} type="email" placeholder="rep@kapypharma.com" className={inputClass} />
-                  {errors.email && <p className="text-red-500 text-xs">{errors.email.message}</p>}
+              {/* Account Info — Optional */}
+              <div className="space-y-2 pt-2 border-t border-border/50">
+                <div className="flex items-center justify-between">
+                  <p className="text-xs font-semibold text-muted-foreground uppercase tracking-wider">بيانات الدخول (اختياري)</p>
                 </div>
+                
+                <div className="grid grid-cols-2 gap-3">
+                  <div className="space-y-1.5">
+                    <label className="text-xs font-medium">البريد الإلكتروني</label>
+                    <input {...register("email")} type="email" placeholder="rep@kapy.com" className={inputClass} />
+                    {errors.email && <p className="text-red-500 text-[10px]">{errors.email.message}</p>}
+                  </div>
 
-                <div className="space-y-1.5">
-                  <label className="text-sm font-medium">كلمة المرور *</label>
-                  <input {...register("password")} type="password" placeholder="كلمة مرور قوية" className={inputClass} />
-                  {errors.password && <p className="text-red-500 text-xs">{errors.password.message}</p>}
+                  <div className="space-y-1.5">
+                    <label className="text-xs font-medium">كلمة المرور</label>
+                    <input {...register("password")} type="password" placeholder="6 أحرف على الأقل" className={inputClass} />
+                    {errors.password && <p className="text-red-500 text-[10px]">{errors.password.message}</p>}
+                  </div>
                 </div>
               </div>
 
               {/* Financial Info */}
-              <div className="space-y-3 pt-2 border-t border-border/50">
+              <div className="space-y-2 pt-2 border-t border-border/50">
                 <p className="text-xs font-semibold text-muted-foreground uppercase tracking-wider">البيانات المالية</p>
 
-                <div className="grid grid-cols-2 gap-3">
-                  <div className="space-y-1.5">
-                    <label className="text-sm font-medium">الراتب الأساسي (ج.م)</label>
-                    <input type="number" step="0.01" min="0" {...register("baseSalary")} placeholder="0.00" className={inputClass} />
-                  </div>
-                  <div className="space-y-1.5">
-                    <label className="text-sm font-medium">الهدف الشهري (ج.م)</label>
-                    <input type="number" step="0.01" min="0" {...register("monthlyTarget")} placeholder="0.00" className={inputClass} />
-                  </div>
+                <div className="space-y-1.5">
+                  <label className="text-xs font-medium">الراتب الأساسي (ج.م)</label>
+                  <input type="number" step="0.01" min="0" {...register("baseSalary")} placeholder="0.00" className={inputClass} />
                 </div>
               </div>
 
               {serverError && (
-                <div className="p-3 rounded-xl bg-red-50 dark:bg-red-900/10 border border-red-200 text-red-700 text-sm">
+                <div className="p-2 rounded-xl bg-red-50 dark:bg-red-900/10 border border-red-200 text-red-700 text-xs">
                   {serverError}
                 </div>
               )}
               {successMsg && (
-                <div className="p-3 rounded-xl bg-emerald-50 dark:bg-emerald-900/10 border border-emerald-200 text-emerald-700 text-sm">
+                <div className="p-2 rounded-xl bg-emerald-50 dark:bg-emerald-900/10 border border-emerald-200 text-emerald-700 text-xs">
                   ✓ {successMsg}
                 </div>
               )}
 
-              <div className="flex gap-3 pt-2">
-                <button type="button" onClick={() => setOpen(false)} className="flex-1 px-4 py-2.5 rounded-xl border border-border text-sm font-medium hover:bg-muted transition-colors">
+              <div className="flex gap-2 pt-1">
+                <button type="button" onClick={() => setOpen(false)} className="flex-1 px-4 py-2 rounded-xl border border-border text-sm font-medium hover:bg-muted transition-colors">
                   إلغاء
                 </button>
                 <button
                   type="submit"
                   disabled={isPending}
                   id="add-rep-submit-btn"
-                  className="flex-1 flex items-center justify-center gap-2 px-4 py-2.5 rounded-xl bg-primary text-primary-foreground text-sm font-semibold hover:bg-primary/90 disabled:opacity-60 transition-colors"
+                  className="flex-1 flex items-center justify-center gap-2 px-4 py-2 rounded-xl bg-primary text-primary-foreground text-sm font-semibold hover:bg-primary/90 disabled:opacity-60 transition-colors"
                 >
                   {isPending ? <Loader2 className="w-4 h-4 animate-spin" /> : <Plus className="w-4 h-4" />}
-                  إضافة المندوب
+                  إضافة
                 </button>
               </div>
             </form>
           </div>
-        </div>
+        </>
       )}
     </>
   );

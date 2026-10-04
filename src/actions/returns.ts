@@ -59,7 +59,7 @@ export async function processInvoiceReturn(
       const returnItemsData = [];
 
       for (const returnItem of data.items) {
-        // Find the corresponding item in the invoice to get its original price
+        // Find the corresponding item in the invoice to get its discountedUnitPrice
         const invItem = invoice.items.find((i) => i.productId === returnItem.productId);
         if (!invItem) {
           throw new Error(`المنتج غير موجود في الفاتورة`);
@@ -68,26 +68,21 @@ export async function processInvoiceReturn(
           throw new Error(`الكمية المرتجعة أكبر من الكمية المباعة للمنتج`);
         }
 
-        const lineTotal = returnItem.quantity * Number(invItem.unitPrice);
+        // CRITICAL: Use discountedUnitPrice — this is the effective price per unit
+        // after the invoice discount was applied, stored at invoice creation time.
+        // This guarantees the refund matches exactly what was charged.
+        const effectiveUnitPrice = Number(invItem.discountedUnitPrice) > 0
+          ? Number(invItem.discountedUnitPrice)
+          : Number(invItem.unitPrice); // fallback for legacy invoices without discountedUnitPrice
 
-        // Calculate proportional discount if there's a percentage discount on the invoice
-        let discountedLineTotal = lineTotal;
-        if (invoice.discountType === "PERCENTAGE" && Number(invoice.discountValue) > 0) {
-          discountedLineTotal = lineTotal - (lineTotal * Number(invoice.discountValue) / 100);
-        } else if (invoice.discountType === "FIXED" && Number(invoice.discountValue) > 0) {
-          const subtotal = Number(invoice.subtotal);
-          if (subtotal > 0) {
-            const proportion = lineTotal / subtotal;
-            discountedLineTotal = lineTotal - (Number(invoice.discountValue) * proportion);
-          }
-        }
+        const discountedLineTotal = returnItem.quantity * effectiveUnitPrice;
 
         totalReturnAmount += discountedLineTotal;
 
         returnItemsData.push({
           productId: returnItem.productId,
           quantity: returnItem.quantity,
-          unitPrice: Number(invItem.unitPrice),
+          unitPrice: effectiveUnitPrice,
           lineTotal: discountedLineTotal,
         });
       }

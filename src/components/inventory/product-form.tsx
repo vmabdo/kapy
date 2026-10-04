@@ -20,7 +20,6 @@ interface ProductData {
   costPrice?: number;
   vatRate: number;
   reorderLevel: number;
-  requiresPrescription: boolean;
 }
 
 interface Props {
@@ -38,7 +37,6 @@ const Schema = z.object({
   costPrice: z.coerce.number().optional(),
   vatRate: z.coerce.number().min(0).max(100).default(0),
   reorderLevel: z.coerce.number().int().min(0).default(0),
-  requiresPrescription: z.boolean().default(false),
 });
 
 type FormData = z.input<typeof Schema>;
@@ -197,7 +195,6 @@ export function ProductForm({ categories: initialCategories, product }: Props) {
           costPrice: product.costPrice,
           vatRate: product.vatRate,
           reorderLevel: product.reorderLevel,
-          requiresPrescription: product.requiresPrescription,
         }
       : { unit: "علبة", packageSize: 1, vatRate: 0, reorderLevel: 0 },
   });
@@ -302,7 +299,7 @@ export function ProductForm({ categories: initialCategories, product }: Props) {
 
       <div className="bg-card border border-border rounded-xl p-5">
         <h2 className="font-semibold text-sm mb-5">التسعير والضرائب</h2>
-        <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
+        <div className="grid grid-cols-1 sm:grid-cols-4 gap-4">
           <Field label="سعر البيع (ج.م)" error={errors.sellingPrice?.message}>
             <input type="number" step="0.01" {...register("sellingPrice")} placeholder="0.00" className={inputClass} />
           </Field>
@@ -314,27 +311,10 @@ export function ProductForm({ categories: initialCategories, product }: Props) {
           <Field label="نسبة ضريبة القيمة المضافة (%)" error={errors.vatRate?.message}>
             <input type="number" step="0.01" min={0} max={100} {...register("vatRate")} placeholder="0" className={inputClass} />
           </Field>
-        </div>
-      </div>
 
-      <div className="bg-card border border-border rounded-xl p-5">
-        <h2 className="font-semibold text-sm mb-5">إعدادات المخزون</h2>
-        <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
           <Field label="مستوى إعادة الطلب (حد التنبيه)" error={errors.reorderLevel?.message}>
             <input type="number" min={0} {...register("reorderLevel")} placeholder="0" className={inputClass} />
           </Field>
-
-          <div className="flex items-center gap-3 pt-7">
-            <input
-              type="checkbox"
-              id="prescription"
-              {...register("requiresPrescription")}
-              className="w-4 h-4 rounded border-border text-primary"
-            />
-            <label htmlFor="prescription" className="text-sm font-medium cursor-pointer">
-              يستلزم وصفة طبية
-            </label>
-          </div>
         </div>
       </div>
 

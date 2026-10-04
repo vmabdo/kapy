@@ -52,7 +52,6 @@ export default async function EditProductPage({ params }: Props) {
           costPrice: product.costPrice ? Number(product.costPrice) : undefined,
           vatRate: Number(product.vatRate),
           reorderLevel: product.reorderLevel,
-          requiresPrescription: product.requiresPrescription,
         }}
       />
     </div>

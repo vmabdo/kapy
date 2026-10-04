@@ -12,6 +12,7 @@ import { addDays, format } from "date-fns";
 const InvoiceItemSchema = z.object({
   productId: z.string().min(1),
   quantity: z.coerce.number().positive("الكمية يجب أن تكون أكبر من 0"),
+  bonusQuantity: z.coerce.number().min(0).optional().default(0), // free boxes — stock deducted but not billed
   unitPrice: z.coerce.number().min(0, "السعر يجب أن يكون صحيحاً").optional().default(0),
 });
 
@@ -19,6 +20,7 @@ const InvoiceItemSchema = z.object({
 const UpfrontPaymentItemSchema = z.object({
   productId: z.string().min(1),
   paidQuantity: z.coerce.number().min(0).optional().default(0),
+  // unitPrice here is the discountedUnitPrice, computed client-side
   unitPrice: z.coerce.number().min(0).optional().default(0),
 });
 
@@ -129,8 +131,10 @@ export async function createInvoice(
     }
 
     // ── Validate warehouse stock availability ──
+    // Stock check must consider quantity + bonusQuantity (total physical boxes)
     if (!data.isLegacy) {
       for (const item of data.items) {
+        const totalRequired = item.quantity + (item.bonusQuantity ?? 0);
         const stockItem = await prisma.stockItem.findUnique({
           where: {
             warehouseId_productId: {
@@ -141,16 +145,16 @@ export async function createInvoice(
           include: { product: { select: { name: true } } },
         });
         const available = Number(stockItem?.quantity ?? 0) - Number(stockItem?.reservedQty ?? 0);
-        if (available < item.quantity) {
+        if (available < totalRequired) {
           return {
             success: false,
-            error: `المخزون غير كافٍ في مخزن "${subWarehouse.name}" للمنتج "${stockItem?.product.name ?? item.productId}". المتاح: ${available}، المطلوب: ${item.quantity}`,
+            error: `المخزون غير كافٍ في مخزن "${subWarehouse.name}" للمنتج "${stockItem?.product.name ?? item.productId}". المتاح: ${available}، المطلوب (بما في ذلك البونص): ${totalRequired}`,
           };
         }
       }
     }
 
-    // Calculate subtotal
+    // Calculate subtotal — only billed quantity * price (bonus boxes are free)
     const subtotal = data.items.reduce(
       (sum, item) => sum + item.quantity * item.unitPrice,
       0
@@ -168,6 +172,16 @@ export async function createInvoice(
 
     const totalAmount = Math.max(0, subtotal - discountAmount);
 
+    // ── CRITICAL: Compute proportional discount factor per item ──
+    // discountFactor = netTotal / grossSubtotal (1.0 means no discount)
+    const discountFactor = subtotal > 0 ? totalAmount / subtotal : 1;
+
+    // Build items with discountedUnitPrice pre-calculated
+    const itemsWithDiscountedPrice = data.items.map((item) => ({
+      ...item,
+      discountedUnitPrice: item.unitPrice * discountFactor,
+    }));
+
     // Get settings for credit days
     const settings = await prisma.appSettings.findFirst();
     const creditDays = settings?.defaultCreditDays ?? 30;
@@ -181,6 +195,7 @@ export async function createInvoice(
     const isCash = data.type === InvoiceType.CASH;
 
     // Calculate upfront amount from itemized items (for CREDIT invoices)
+    // Upfront uses discountedUnitPrice so the amount is accurate after discount
     let amountPaidNow = 0;
     const activeUpfrontItems = (data.upfrontPaymentItems ?? []).filter(
       (pi) => pi.paidQuantity > 0
@@ -189,6 +204,7 @@ export async function createInvoice(
     if (isCash) {
       amountPaidNow = totalAmount;
     } else if (activeUpfrontItems.length > 0) {
+      // unitPrice in upfrontPaymentItems is already the discountedUnitPrice (set by client)
       amountPaidNow = activeUpfrontItems.reduce(
         (sum, pi) => sum + pi.paidQuantity * pi.unitPrice,
         0
@@ -229,10 +245,12 @@ export async function createInvoice(
           isLegacy: data.isLegacy,
           invoiceDate: data.isLegacy && data.issueDate ? data.issueDate : undefined,
           items: {
-            create: data.items.map((item) => ({
+            create: itemsWithDiscountedPrice.map((item) => ({
               productId: item.productId,
               quantity: item.quantity,
+              bonusQuantity: item.bonusQuantity ?? 0,
               unitPrice: item.unitPrice,
+              discountedUnitPrice: item.discountedUnitPrice,
               lineTotal: item.quantity * item.unitPrice,
             })),
           },
@@ -240,8 +258,10 @@ export async function createInvoice(
       });
 
       // 2. Deduct stock from the sub-warehouse of the client's governorate
+      // IMPORTANT: Total physical deduction = quantity + bonusQuantity
       if (!data.isLegacy) {
-        for (const item of data.items) {
+        for (const item of itemsWithDiscountedPrice) {
+          const totalDeductQty = item.quantity + (item.bonusQuantity ?? 0);
           await tx.stockItem.update({
             where: {
               warehouseId_productId: {
@@ -249,11 +269,11 @@ export async function createInvoice(
                 productId: item.productId,
               },
             },
-            data: { quantity: { decrement: item.quantity } },
+            data: { quantity: { decrement: totalDeductQty } },
           });
         }
 
-        // 3. Record stock movement for audit trail
+        // 3. Record stock movement for audit trail (total boxes including bonus)
         await tx.stockMovement.create({
           data: {
             movementType: "OUTBOUND",
@@ -262,9 +282,9 @@ export async function createInvoice(
             salesRepId: data.salesRepId,
             notes: `صرف للفاتورة ${invoiceNumber}`,
             items: {
-              create: data.items.map((item) => ({
+              create: itemsWithDiscountedPrice.map((item) => ({
                 productId: item.productId,
-                quantity: item.quantity,
+                quantity: item.quantity + (item.bonusQuantity ?? 0),
               })),
             },
           },
@@ -286,15 +306,45 @@ export async function createInvoice(
         });
 
         // 4.1 Add itemized payment items for upfront credit payment
+        // unitPrice here already holds the discountedUnitPrice passed from the client
         if (!isCash && activeUpfrontItems.length > 0) {
           await tx.paymentItem.createMany({
             data: activeUpfrontItems.map((pi) => ({
               paymentId: payment.id,
               productId: pi.productId,
               paidQuantity: pi.paidQuantity,
-              unitPrice: pi.unitPrice,
+              unitPrice: pi.unitPrice, // discountedUnitPrice
             })),
           });
+
+          // 4.2 Update Rep Monthly Target achieved quantities on upfront payment
+          if (!data.isLegacy) {
+            const now = new Date();
+            const repMonthlyTarget = await tx.repMonthlyTarget.findUnique({
+              where: {
+                salesRepId_month_year: {
+                  salesRepId: data.salesRepId,
+                  month: now.getMonth() + 1,
+                  year: now.getFullYear(),
+                },
+              },
+              include: { items: true },
+            });
+
+            if (repMonthlyTarget) {
+              for (const pi of activeUpfrontItems) {
+                const targetItem = repMonthlyTarget.items.find(
+                  (ti) => ti.productId === pi.productId
+                );
+                if (targetItem) {
+                  await tx.repMonthlyTargetItem.update({
+                    where: { id: targetItem.id },
+                    data: { achievedQuantity: { increment: pi.paidQuantity } },
+                  });
+                }
+              }
+            }
+          }
         }
 
         // 4.2 Sync with Treasury
@@ -369,34 +419,8 @@ export async function createInvoice(
         }
       }
 
-      // 7. Update Rep Monthly Product Targets (achievedQuantity)
-      if (!data.isLegacy) {
-        const now = new Date();
-        const repMonthlyTarget = await tx.repMonthlyTarget.findUnique({
-          where: {
-            salesRepId_month_year: {
-              salesRepId: data.salesRepId,
-              month: now.getMonth() + 1,
-              year: now.getFullYear(),
-            },
-          },
-          include: { items: true },
-        });
-
-        if (repMonthlyTarget) {
-          for (const invoiceItem of data.items) {
-            const targetItem = repMonthlyTarget.items.find(
-              (ti) => ti.productId === invoiceItem.productId
-            );
-            if (targetItem) {
-              await tx.repMonthlyTargetItem.update({
-                where: { id: targetItem.id },
-                data: { achievedQuantity: { increment: invoiceItem.quantity } },
-              });
-            }
-          }
-        }
-      }
+      // NOTE: Rep Monthly Product Target achievedQuantity is updated ONLY upon actual
+      // payment collection (see recordInvoicePayment), NOT at invoice creation.
 
       return invoice;
     });
@@ -512,12 +536,39 @@ export async function recordInvoicePayment(
             paymentId: payment.id,
             productId: pi.productId,
             paidQuantity: pi.paidQuantity,
-            unitPrice: pi.unitPrice,
+            unitPrice: pi.unitPrice, // discountedUnitPrice passed from client
           })),
         });
+
+        // 4. Update Rep Monthly Target achievedQuantity based on paid quantities
+        // Targets are updated on PAYMENT, not on invoice creation
+        const repMonthlyTarget = await tx.repMonthlyTarget.findUnique({
+          where: {
+            salesRepId_month_year: {
+              salesRepId: invoice.salesRepId,
+              month: new Date().getMonth() + 1,
+              year: new Date().getFullYear(),
+            },
+          },
+          include: { items: true },
+        });
+
+        if (repMonthlyTarget) {
+          for (const pi of data.paymentItems) {
+            const targetItem = repMonthlyTarget.items.find(
+              (ti) => ti.productId === pi.productId
+            );
+            if (targetItem) {
+              await tx.repMonthlyTargetItem.update({
+                where: { id: targetItem.id },
+                data: { achievedQuantity: { increment: pi.paidQuantity } },
+              });
+            }
+          }
+        }
       }
 
-      // 4. Update Client Balance (reduce debt)
+      // 5. Update Client Balance (reduce debt)
       if (invoice.type === InvoiceType.CREDIT) {
         await tx.pharmacy.update({
           where: { id: invoice.pharmacyId },

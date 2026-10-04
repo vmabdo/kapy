@@ -4,15 +4,21 @@ import { prisma } from "@/lib/prisma";
 import { ArrowRight, Printer, CalendarDays, TrendingUp, TrendingDown, FileText, Undo2 } from "lucide-react";
 import { formatCurrency, formatDate } from "@/lib/utils";
 import { PrintButton } from "../../sales/[id]/print-button";
+import { DailyDatePicker } from "./date-picker";
+import { Suspense } from "react";
 
 export const metadata: Metadata = { title: "التقرير اليومي" };
 export const dynamic = "force-dynamic";
 
-export default async function DailyReportPage() {
-  const today = new Date();
+export default async function DailyReportPage({ searchParams }: { searchParams: { date?: string } }) {
+  // Use date from searchParams or default to today
+  const selectedDate = searchParams?.date ? new Date(searchParams.date) : new Date();
+  // Ensure we work with the date in local time (midnight)
+  const today = new Date(selectedDate);
   today.setHours(0, 0, 0, 0);
   const tomorrow = new Date(today);
   tomorrow.setDate(tomorrow.getDate() + 1);
+  const isToday = !searchParams?.date;
 
   // Fetch today's data in parallel
   const [invoices, payments, treasuryOut, returnsList] = await Promise.all([
@@ -89,9 +95,14 @@ export default async function DailyReportPage() {
               <CalendarDays className="w-6 h-6 text-primary" />
               تقرير يومية الخزينة والمبيعات
             </h1>
-            <p className="page-subtitle">عن يوم {formatDate(today)}</p>
+            <p className="page-subtitle">عن يوم {formatDate(today)}{isToday && " (اليوم)"}</p>
           </div>
-          <PrintButton />
+          <div className="flex items-center gap-3">
+            <Suspense fallback={null}>
+              <DailyDatePicker />
+            </Suspense>
+            <PrintButton />
+          </div>
         </div>
       </div>
 
@@ -174,8 +185,22 @@ export default async function DailyReportPage() {
                                 <tr key={item.id} className="hover:bg-muted/10 transition-colors print:break-inside-avoid">
                                   <td className="px-4 py-2 font-medium">{item.product.name}</td>
                                   <td className="px-4 py-2 text-center text-primary font-bold">{item.quantity}</td>
-                                  <td className="px-4 py-2 text-center">{formatCurrency(item.unitPrice.toString())}</td>
-                                  <td className="px-4 py-2 text-left font-bold">{formatCurrency(item.lineTotal.toString())}</td>
+                                  <td className="px-4 py-2 text-center">
+                                    {Number(item.discountedUnitPrice) > 0 && Number(item.discountedUnitPrice) !== Number(item.unitPrice) ? (
+                                      <div className="flex flex-col items-center gap-0.5">
+                                        <span className="text-[10px] text-muted-foreground line-through">{formatCurrency(item.unitPrice.toString())}</span>
+                                        <span className="font-bold text-primary text-xs">{formatCurrency(item.discountedUnitPrice.toString())}</span>
+                                      </div>
+                                    ) : (
+                                      <span>{formatCurrency(item.unitPrice.toString())}</span>
+                                    )}
+                                  </td>
+                                  <td className="px-4 py-2 text-left font-bold">
+                                    {formatCurrency((Number(item.discountedUnitPrice) > 0
+                                      ? Number(item.discountedUnitPrice) * Number(item.quantity)
+                                      : Number(item.lineTotal)
+                                    ).toString())}
+                                  </td>
                                 </tr>
                               ))}
                             </tbody>

@@ -17,18 +17,30 @@ type ActionResult<T = void> =
 const CreateRepSchema = z.object({
   name: z.string().min(2, "الاسم مطلوب"),
   phone: z.string().optional(),
-  email: z.string().email("البريد الإلكتروني غير صالح"),
-  password: z.string().min(6, "كلمة المرور يجب أن تكون 6 أحرف على الأقل"),
+  /// Optional — if empty, no User account is created for this rep
+  email: z.string().email("البريد الإلكتروني غير صالح").optional().or(z.literal("")),
+  /// Optional — only required when email is provided
+  password: z.string().min(6, "كلمة المرور يجب أن تكون 6 أحرف على الأقل").optional().or(z.literal("")),
   baseSalary: z.coerce.number().min(0).default(0),
-  monthlyTarget: z.coerce.number().min(0).default(0),
   governorateId: z.string().optional(),
-});
+}).refine(
+  (data) => {
+    // If email is provided, password must also be provided
+    if (data.email && data.email.trim().length > 0) {
+      return data.password && data.password.trim().length >= 6;
+    }
+    return true;
+  },
+  {
+    message: "كلمة المرور مطلوبة عند تحديد البريد الإلكتروني",
+    path: ["password"],
+  }
+);
 
 const UpdateRepSchema = z.object({
   name: z.string().min(2, "الاسم مطلوب"),
   phone: z.string().optional(),
   baseSalary: z.coerce.number().min(0).default(0),
-  monthlyTarget: z.coerce.number().min(0).default(0),
   governorateId: z.string().optional(),
 });
 
@@ -51,50 +63,54 @@ const AddDeductionSchema = z.object({
 // ─── Create Sales Rep (User + SalesRep atomically) ────────────
 
 export async function createSalesRep(
-  formData: z.infer<typeof CreateRepSchema>
+  formData: unknown
 ): Promise<ActionResult<{ id: string }>> {
   try {
     await requireRole([UserRole.SUPER_ADMIN, UserRole.ADMIN]);
     const data = CreateRepSchema.parse(formData);
-
-    // Check email uniqueness
-    const existing = await prisma.user.findUnique({ where: { email: data.email } });
-    if (existing) return { success: false, error: "هذا البريد الإلكتروني مستخدم بالفعل" };
-
-    const passwordHash = await bcrypt.hash(data.password, 12);
 
     // Generate unique employee code: REP-YYYY-XXXX
     const year = new Date().getFullYear();
     const count = await prisma.salesRep.count();
     const employeeCode = `REP-${year}-${String(count + 1).padStart(4, "0")}`;
 
-    const result = await prisma.$transaction(async (tx) => {
-      const user = await tx.user.create({
+    const hasAccountCredentials =
+      data.email && data.email.trim().length > 0 &&
+      data.password && data.password.trim().length >= 6;
+
+    let userId: string | null = null;
+
+    if (hasAccountCredentials) {
+      // Check email uniqueness only if creating an account
+      const existing = await prisma.user.findUnique({ where: { email: data.email! } });
+      if (existing) return { success: false, error: "هذا البريد الإلكتروني مستخدم بالفعل" };
+
+      const passwordHash = await bcrypt.hash(data.password!, 12);
+      const user = await prisma.user.create({
         data: {
           name: data.name,
-          email: data.email,
+          email: data.email!,
           passwordHash,
           role: UserRole.SALES_REP,
         },
       });
+      userId = user.id;
+    }
 
-      const rep = await tx.salesRep.create({
-        data: {
-          userId: user.id,
-          name: data.name,
-          phone: data.phone || null,
-          employeeCode,
-          baseSalary: data.baseSalary,
-          monthlyTarget: data.monthlyTarget,
-          governorateId: data.governorateId || null,
-        },
-      });
-
-      return rep;
+    const rep = await prisma.salesRep.create({
+      data: {
+        userId: userId ?? undefined,
+        name: data.name,
+        phone: data.phone || null,
+        employeeCode,
+        baseSalary: data.baseSalary,
+        monthlyTarget: 0,
+        governorateId: data.governorateId || null,
+      },
     });
 
     revalidatePath("/dashboard/sales/reps");
-    return { success: true, data: { id: result.id }, message: "تم إضافة المندوب بنجاح" };
+    return { success: true, data: { id: rep.id }, message: "تم إضافة المندوب بنجاح" };
   } catch (e: unknown) {
     return { success: false, error: e instanceof Error ? e.message : "حدث خطأ غير متوقع" };
   }
@@ -116,7 +132,6 @@ export async function updateSalesRep(
         name: data.name,
         phone: data.phone || null,
         baseSalary: data.baseSalary,
-        monthlyTarget: data.monthlyTarget,
         governorateId: data.governorateId || null,
       },
     });

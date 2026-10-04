@@ -3,7 +3,7 @@ import Link from "next/link";
 import { getCompanyById } from "@/queries/companies";
 import { getAllSalesReps } from "@/queries/sales";
 import { ChangeRepForm } from "@/components/pharmacies/change-rep-form";
-import { Building2, ArrowRight, FileText, Target, Wallet, User, Phone, MapPin, Receipt } from "lucide-react";
+import { Building2, ArrowRight, FileText, Target, Wallet, User, Phone, MapPin, Receipt, BookOpen } from "lucide-react";
 import { formatCurrency, formatDate, cn } from "@/lib/utils";
 import type { Metadata } from "next";
 import { PaymentMethod } from "@prisma/client";
@@ -67,13 +67,22 @@ export default async function CompanyDetailPage({ params }: Props) {
             </p>
           </div>
         </div>
-        <Link
-          href={`/dashboard/sales/new?clientId=${company.id}`}
-          className="flex items-center gap-2 px-4 py-2 rounded-xl bg-primary text-primary-foreground text-sm font-medium hover:bg-primary/90 transition-colors"
-        >
-          <FileText className="w-4 h-4" />
-          إصدار فاتورة للشركة
-        </Link>
+        <div className="flex items-center gap-2 flex-wrap">
+          <Link
+            href={`/dashboard/pharmacies/${company.id}/statement`}
+            className="flex items-center gap-2 px-4 py-2 rounded-xl bg-amber-500 text-white text-sm font-medium hover:bg-amber-600 transition-colors"
+          >
+            <BookOpen className="w-4 h-4" />
+            كشف حساب
+          </Link>
+          <Link
+            href={`/dashboard/sales/new?clientId=${company.id}`}
+            className="flex items-center gap-2 px-4 py-2 rounded-xl bg-primary text-primary-foreground text-sm font-medium hover:bg-primary/90 transition-colors"
+          >
+            <FileText className="w-4 h-4" />
+            إصدار فاتورة للشركة
+          </Link>
+        </div>
       </div>
 
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">

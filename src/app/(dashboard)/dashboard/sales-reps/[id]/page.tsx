@@ -6,8 +6,8 @@ import { getAllProducts, getAllWarehouses } from "@/queries/inventory";
 import { prisma } from "@/lib/prisma";
 import { formatCurrency, formatDate, cn } from "@/lib/utils";
 import {
-  Users, ArrowRight, Phone, MapPin, Calendar, Target,
-  TrendingUp, FileText, Gift, Minus, DollarSign, AlertTriangle, Package,
+  Users, ArrowRight, Phone, MapPin, Calendar,
+  TrendingUp, FileText, Gift, Minus, DollarSign, Package, Target,
 } from "lucide-react";
 import { BonusDeductionForms } from "./bonus-deduction-forms";
 import { RepMonthlyTargetForm } from "@/components/sales/rep-monthly-target-form";
@@ -59,17 +59,10 @@ export default async function RepDetailPage({ params }: { params: { id: string }
   ]);
 
   const monthSales = Number(monthInvoices._sum.total ?? 0);
-  const target = Number(rep.monthlyTarget);
-  const achievement = target > 0 ? Math.min((monthSales / target) * 100, 100) : 0;
 
   const totalBonuses = bonuses.reduce((s, b) => s + Number(b.amount), 0);
   const totalDeductions = deductions.reduce((s, d) => s + Number(d.amount), 0);
   const netSalary = Number(rep.baseSalary) + totalBonuses - totalDeductions;
-
-  const achievementColor =
-    achievement >= 100 ? "bg-emerald-500" :
-    achievement >= 70  ? "bg-blue-500" :
-    achievement >= 40  ? "bg-amber-500" : "bg-red-500";
 
   return (
     <div dir="rtl" className="space-y-6">
@@ -137,65 +130,6 @@ export default async function RepDetailPage({ params }: { params: { id: string }
           <p className="text-xl font-bold mt-1.5 text-primary tabular-nums">{formatCurrency(String(netSalary))}</p>
           <p className="text-[11px] text-muted-foreground mt-1">المستحق الإجمالي</p>
         </div>
-      </div>
-
-      {/* Monthly Target Progress */}
-      <div className="section-card p-5">
-        <div className="flex items-center justify-between mb-4">
-          <h2 className="font-semibold text-sm flex items-center gap-2">
-            <Target className="w-4 h-4 text-primary" />
-            أداء الشهر الحالي
-          </h2>
-          <div className="text-xs text-muted-foreground">
-            {now.toLocaleDateString("ar-EG", { month: "long", year: "numeric" })}
-          </div>
-        </div>
-
-        <div className="grid grid-cols-1 sm:grid-cols-3 gap-4 mb-4">
-          <div className="bg-muted/40 rounded-xl p-3.5 text-center">
-            <p className="text-xs text-muted-foreground mb-1">مبيعات الشهر</p>
-            <p className="text-lg font-bold tabular-nums">{formatCurrency(String(monthSales))}</p>
-          </div>
-          <div className="bg-muted/40 rounded-xl p-3.5 text-center">
-            <p className="text-xs text-muted-foreground mb-1">الهدف الشهري</p>
-            <p className="text-lg font-bold tabular-nums">{formatCurrency(String(target))}</p>
-          </div>
-          <div className="bg-muted/40 rounded-xl p-3.5 text-center">
-            <p className="text-xs text-muted-foreground mb-1">نسبة الإنجاز</p>
-            <p className={cn(
-              "text-lg font-bold tabular-nums",
-              achievement >= 100 ? "text-emerald-600" : achievement >= 70 ? "text-blue-600" : "text-amber-600"
-            )}>
-              {Math.round(achievement)}%
-            </p>
-          </div>
-        </div>
-
-        {target > 0 ? (
-          <div>
-            <div className="flex justify-between text-xs text-muted-foreground mb-1.5">
-              <span>0</span>
-              <span className="font-medium">{formatCurrency(String(target))}</span>
-            </div>
-            <div className="h-3 bg-muted rounded-full overflow-hidden">
-              <div
-                className={`h-full rounded-full transition-all duration-700 ${achievementColor}`}
-                style={{ width: `${achievement}%` }}
-              />
-            </div>
-            {achievement >= 100 && (
-              <p className="text-xs text-emerald-600 font-semibold mt-2 flex items-center gap-1">
-                <TrendingUp className="w-3.5 h-3.5" />
-                🎉 تم تحقيق الهدف الشهري!
-              </p>
-            )}
-          </div>
-        ) : (
-          <p className="text-xs text-muted-foreground flex items-center gap-1.5">
-            <AlertTriangle className="w-3.5 h-3.5 text-amber-500" />
-            لم يُحدَّد هدف شهري لهذا المندوب
-          </p>
-        )}
       </div>
 
       {/* ─── Monthly Product Targets Management ──────────────── */}

@@ -62,7 +62,9 @@ export default async function InvoiceDetailPage({ params }: Props) {
     productSku: item.product.sku,
     productUnit: item.product.unit,
     quantity: Number(item.quantity),
-    unitPrice: Number(item.unitPrice),
+    // Use discountedUnitPrice when available, fall back to original unitPrice
+    unitPrice: Number(item.discountedUnitPrice) > 0 ? Number(item.discountedUnitPrice) : Number(item.unitPrice),
+    originalUnitPrice: Number(item.unitPrice),
     lineTotal: Number(item.lineTotal),
   }));
 
@@ -147,7 +149,7 @@ export default async function InvoiceDetailPage({ params }: Props) {
                     <th className="text-center px-4 py-3 font-semibold text-muted-foreground">الكمية</th>
                     <th className="text-center px-4 py-3 font-semibold text-muted-foreground">الكمية بعد المرتجع</th>
                     <th className="text-center px-4 py-3 font-semibold text-muted-foreground">المتبقية للدفع</th>
-                    <th className="text-center px-4 py-3 font-semibold text-muted-foreground">سعر الوحدة</th>
+                    <th className="text-center px-4 py-3 font-semibold text-muted-foreground">سعر الوحدة (بعد الخصم)</th>
                     <th className="text-center px-4 py-3 font-semibold text-muted-foreground">الإجمالي</th>
                   </tr>
                 </thead>
@@ -166,8 +168,19 @@ export default async function InvoiceDetailPage({ params }: Props) {
                         {calc.returnedQty > 0 && <span className="block text-[10px] text-red-500 font-normal">(-{calc.returnedQty} مرتجع)</span>}
                       </td>
                       <td className="px-4 py-3 text-center text-amber-600 font-semibold">{calc.pendingQty} {item.product.unit}</td>
-                      <td className="px-4 py-3 text-center">{formatCurrency(item.unitPrice.toString())}</td>
-                      <td className="px-4 py-3 text-center font-semibold text-foreground">{formatCurrency(item.lineTotal.toString())}</td>
+                      <td className="px-4 py-3 text-center">
+                        {Number(item.discountedUnitPrice) > 0 && Number(item.discountedUnitPrice) !== Number(item.unitPrice) ? (
+                          <div className="flex flex-col items-center gap-0.5">
+                            <span className="text-[10px] text-muted-foreground line-through">{formatCurrency(item.unitPrice.toString())}</span>
+                            <span className="font-bold text-primary">{formatCurrency(item.discountedUnitPrice.toString())}</span>
+                          </div>
+                        ) : (
+                          <span className="font-medium">{formatCurrency(item.unitPrice.toString())}</span>
+                        )}
+                      </td>
+                      <td className="px-4 py-3 text-center font-semibold text-foreground">
+                        {formatCurrency((Number(item.discountedUnitPrice) > 0 ? Number(item.discountedUnitPrice) * Number(item.quantity) : Number(item.lineTotal)).toString())}
+                      </td>
                     </tr>
                   )})}
                 </tbody>

@@ -3,7 +3,7 @@ import Link from "next/link";
 import { getPharmacyById } from "@/queries/pharmacies";
 import { getAllSalesReps } from "@/queries/sales";
 import { ChangeRepForm } from "@/components/pharmacies/change-rep-form";
-import { Building2, ArrowRight, FileText, Target, Wallet, User, Phone, MapPin } from "lucide-react";
+import { Building2, ArrowRight, FileText, Target, Wallet, User, Phone, MapPin, BookOpen } from "lucide-react";
 import { formatCurrency, formatDate, cn } from "@/lib/utils";
 import type { Metadata } from "next";
 
@@ -60,13 +60,22 @@ export default async function PharmacyDetailPage({ params }: Props) {
             </p>
           </div>
         </div>
-        <Link
-          href={`/dashboard/sales/new?clientId=${pharmacy.id}`}
-          className="flex items-center gap-2 px-4 py-2 rounded-xl bg-primary text-primary-foreground text-sm font-medium hover:bg-primary/90 transition-colors"
-        >
-          <FileText className="w-4 h-4" />
-          إصدار فاتورة
-        </Link>
+        <div className="flex items-center gap-2 flex-wrap">
+          <Link
+            href={`/dashboard/pharmacies/${pharmacy.id}/statement`}
+            className="flex items-center gap-2 px-4 py-2 rounded-xl bg-amber-500 text-white text-sm font-medium hover:bg-amber-600 transition-colors"
+          >
+            <BookOpen className="w-4 h-4" />
+            كشف حساب
+          </Link>
+          <Link
+            href={`/dashboard/sales/new?clientId=${pharmacy.id}`}
+            className="flex items-center gap-2 px-4 py-2 rounded-xl bg-primary text-primary-foreground text-sm font-medium hover:bg-primary/90 transition-colors"
+          >
+            <FileText className="w-4 h-4" />
+            إصدار فاتورة
+          </Link>
+        </div>
       </div>
 
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">

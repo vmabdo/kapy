@@ -18,7 +18,8 @@ interface InvoiceItemForPayment {
   productSku: string;
   productUnit: string;
   quantity: number;      // total ordered
-  unitPrice: number;
+  unitPrice: number;     // effective (discounted) unit price
+  originalUnitPrice?: number; // original price before discount (for display only)
   lineTotal: number;
 }
 
@@ -314,7 +315,16 @@ export function PaymentForm({ invoiceId, remainingAmount, invoiceItems = [] }: P
                       <p className="text-[11px] text-muted-foreground font-mono">{item.productSku}</p>
                       <p className="text-xs text-muted-foreground mt-1">
                         الإجمالي: {item.quantity} {item.productUnit} ×{" "}
-                        {formatCurrency(item.unitPrice.toString())}
+                        {item.originalUnitPrice && item.originalUnitPrice !== item.unitPrice ? (
+                          <>
+                            <span className="line-through text-muted-foreground/60 text-[10px] mr-0.5">{item.originalUnitPrice.toFixed(2)}</span>
+                            {" "}
+                            <span className="font-semibold text-primary">{item.unitPrice.toFixed(2)} ج.م</span>
+                            <span className="text-[10px] text-amber-600 mr-1">(بعد الخصم)</span>
+                          </>
+                        ) : (
+                          <>{item.unitPrice.toFixed(2)} ج.م</>
+                        )}
                       </p>
                     </div>
                     <div className="flex flex-col items-end gap-1 shrink-0">

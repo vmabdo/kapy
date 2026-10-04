@@ -83,6 +83,7 @@ export async function getAllSalesReps() {
   const reps = await prisma.salesRep.findMany({
     where: { isActive: true },
     include: {
+      // user may be null for reps without system login accounts
       user: { select: { email: true } },
       _count: { select: { invoices: true, assignedPharmacies: true } },
     },

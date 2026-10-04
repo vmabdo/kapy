@@ -58,6 +58,7 @@ const Schema = z.object({
       z.object({
         productId: z.string().min(1, "اختر منتجاً"),
         quantity: z.coerce.number().positive("يجب أن تكون الكمية موجبة"),
+        bonusQuantity: z.coerce.number().min(0).optional().default(0), // free boxes
         unitPrice: z.coerce.number().min(0, "السعر غير صالح").optional().default(0),
       })
     )
@@ -93,7 +94,7 @@ export function InvoiceForm({ pharmacies, salesReps, products, initialClientId }
       isLegacy: false,
       issueDate: new Date().toISOString().split('T')[0],
       upfrontPaymentItems: [],
-      items: [{ productId: "", quantity: 1, unitPrice: 0 }],
+      items: [{ productId: "", quantity: 1, bonusQuantity: 0, unitPrice: 0 }],
     },
   });
 
@@ -118,6 +119,15 @@ export function InvoiceForm({ pharmacies, salesReps, products, initialClientId }
     }
   }, [upfrontPaymentItems, selectedType, setValue]);
 
+  // Re-sync upfront item prices whenever discount changes (discountedUnitPrice must be recalculated)
+  useEffect(() => {
+    if (selectedType !== InvoiceType.CASH) {
+      setTimeout(syncUpfrontItems, 0);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [discountValue, discountType]);
+
+  // Subtotal = only billed quantity * price (bonus is free)
   const subtotal =
     watchItems?.reduce(
       (sum: number, item: { quantity?: number; unitPrice?: number }) =>
@@ -133,6 +143,11 @@ export function InvoiceForm({ pharmacies, salesReps, products, initialClientId }
       : 0;
 
   const total = Math.max(0, subtotal - discountAmount);
+
+  // ── Proportional discount factor ──
+  // Used to compute discountedUnitPrice per item for upfront payment and returns
+  const discountFactor = subtotal > 0 ? total / subtotal : 1;
+
   const isCash = selectedType === InvoiceType.CASH;
 
   // Compute the upfront paid amount from itemized entries
@@ -150,28 +165,41 @@ export function InvoiceForm({ pharmacies, salesReps, products, initialClientId }
       setValue(`items.${index}.unitPrice`, product.sellingPrice, {
         shouldValidate: true,
       });
-      // Also update the matching upfrontPaymentItem's unitPrice
-      const upfrontIdx = (upfrontPaymentItems ?? []).findIndex(
-        (pi) => pi.productId === productId
-      );
-      if (upfrontIdx >= 0) {
-        setValue(`upfrontPaymentItems.${upfrontIdx}.unitPrice`, product.sellingPrice);
-      }
+      // Recalculate upfront items to use new discountedUnitPrice
+      setTimeout(syncUpfrontItems, 0);
     }
   };
 
   // When items change, sync the upfrontPaymentItems array to match
+  // CRITICAL: unitPrice in upfrontPaymentItems is the discountedUnitPrice (after discount)
   const syncUpfrontItems = () => {
     const currentItems = getValues("items") ?? [];
     const currentUpfront = getValues("upfrontPaymentItems") ?? [];
+    // Re-compute discountFactor at sync time
+    const currentSubtotal = currentItems.reduce(
+      (s, i) => s + (Number(i.quantity) || 0) * (Number(i.unitPrice) || 0),
+      0
+    );
+    const currentDiscountValue = Number(getValues("discountValue") || 0);
+    const currentDiscountType = getValues("discountType");
+    let currentDiscountAmount = 0;
+    if (currentDiscountValue > 0) {
+      currentDiscountAmount = currentDiscountType === DiscountType.PERCENTAGE
+        ? (currentSubtotal * currentDiscountValue) / 100
+        : currentDiscountValue;
+    }
+    const currentTotal = Math.max(0, currentSubtotal - currentDiscountAmount);
+    const factor = currentSubtotal > 0 ? currentTotal / currentSubtotal : 1;
+
     const newUpfront = currentItems
       .filter((item) => item.productId)
       .map((item) => {
         const existing = currentUpfront.find((u) => u.productId === item.productId);
+        const discountedPrice = (Number(item.unitPrice) || 0) * factor;
         return {
           productId: item.productId,
           paidQuantity: existing?.paidQuantity || 0,
-          unitPrice: item.unitPrice || 0,
+          unitPrice: discountedPrice, // discountedUnitPrice
         };
       });
     setValue("upfrontPaymentItems", newUpfront, { shouldValidate: true });
@@ -192,16 +220,18 @@ export function InvoiceForm({ pharmacies, salesReps, products, initialClientId }
         paidAmount: data.paidAmount ?? 0,
         isLegacy: data.isLegacy ?? false,
         issueDate: data.isLegacy && data.issueDate ? new Date(data.issueDate) : undefined,
+        // upfrontPaymentItems carry discountedUnitPrice as unitPrice
         upfrontPaymentItems: (data.upfrontPaymentItems ?? []).filter(
           (pi) => (pi.paidQuantity ?? 0) > 0
         ).map((pi) => ({
           ...pi,
           paidQuantity: pi.paidQuantity ?? 0,
-          unitPrice: pi.unitPrice ?? 0,
+          unitPrice: pi.unitPrice ?? 0, // discountedUnitPrice
         })),
         items: data.items.map(item => ({
           ...item,
           unitPrice: item.unitPrice ?? 0,
+          bonusQuantity: item.bonusQuantity ?? 0,
         })),
       });
       if (result.success) {
@@ -417,11 +447,10 @@ export function InvoiceForm({ pharmacies, salesReps, products, initialClientId }
 
         <div className="space-y-3">
           {fields.map((field, index) => (
-            <div
-              key={field.id}
+            <div key={field.id}
               className="grid grid-cols-12 gap-3 items-start p-3 bg-muted/30 rounded-xl border border-border/50"
             >
-              <div className="col-span-12 sm:col-span-5">
+              <div className="col-span-12 sm:col-span-4">
                 <label className="text-xs text-muted-foreground mb-1 block">المنتج</label>
                 <select
                   {...register(`items.${index}.productId`)}
@@ -441,18 +470,39 @@ export function InvoiceForm({ pharmacies, salesReps, products, initialClientId }
                 </select>
               </div>
 
-              <div className="col-span-4 sm:col-span-2">
+              {/* Quantity */}
+              <div className="col-span-3 sm:col-span-2">
                 <label className="text-xs text-muted-foreground mb-1 block">الكمية</label>
                 <input
                   type="number"
                   min={0}
                   step="any"
                   {...register(`items.${index}.quantity`)}
+                  onChange={(e) => {
+                    register(`items.${index}.quantity`).onChange(e);
+                    setTimeout(syncUpfrontItems, 0);
+                  }}
                   className={cn(inputClass, "text-center")}
                 />
               </div>
 
-              <div className="col-span-4 sm:col-span-2">
+              {/* Bonus Quantity (free boxes) */}
+              <div className="col-span-3 sm:col-span-2">
+                <label className="text-xs text-muted-foreground mb-1 block flex items-center gap-1">
+                  بونص 🎁
+                </label>
+                <input
+                  type="number"
+                  min={0}
+                  step="any"
+                  {...register(`items.${index}.bonusQuantity`)}
+                  placeholder="0"
+                  className={cn(inputClass, "text-center border-emerald-300 dark:border-emerald-700/50 bg-emerald-50/50 dark:bg-emerald-900/10")}
+                />
+              </div>
+
+              {/* Unit Price */}
+              <div className="col-span-3 sm:col-span-2">
                 <label className="text-xs text-muted-foreground mb-1 block">سعر الوحدة</label>
                 <input
                   type="number"
@@ -463,9 +513,10 @@ export function InvoiceForm({ pharmacies, salesReps, products, initialClientId }
                 />
               </div>
 
-              <div className="col-span-4 sm:col-span-2">
+              {/* Line Total */}
+              <div className="col-span-3 sm:col-span-1">
                 <label className="text-xs text-muted-foreground mb-1 block">الإجمالي</label>
-                <div className="w-full px-3 py-2.5 rounded-xl border border-transparent bg-transparent text-sm font-semibold text-center text-primary">
+                <div className="w-full px-2 py-2.5 rounded-xl border border-transparent bg-transparent text-sm font-semibold text-center text-primary">
                   {formatCurrency(
                     (
                       (watchItems?.[index]?.quantity || 0) *
