@@ -1,4 +1,5 @@
 "use server";
+import { handleActionError } from "@/lib/error-handler";
 
 import { prisma } from "@/lib/prisma";
 import { requireRole } from "@/lib/auth-utils";
@@ -115,7 +116,7 @@ export async function createSalesRep(
     revalidatePath("/dashboard/sales/reps");
     return { success: true, data: { id: rep.id }, message: "تم إضافة المندوب بنجاح" };
   } catch (e: unknown) {
-    return { success: false, error: e instanceof Error ? e.message : "حدث خطأ غير متوقع" };
+    return { success: false, error: handleActionError(e) };
   }
 }
 
@@ -143,7 +144,7 @@ export async function updateSalesRep(
     revalidatePath(`/dashboard/sales/reps/${repId}`);
     return { success: true, data: undefined, message: "تم تحديث بيانات المندوب بنجاح" };
   } catch (e: unknown) {
-    return { success: false, error: e instanceof Error ? e.message : "حدث خطأ غير متوقع" };
+    return { success: false, error: handleActionError(e) };
   }
 }
 
@@ -170,7 +171,7 @@ export async function addRepBonus(
     revalidatePath("/dashboard/sales/reps");
     return { success: true, data: undefined, message: "تم إضافة المكافأة بنجاح" };
   } catch (e: unknown) {
-    return { success: false, error: e instanceof Error ? e.message : "حدث خطأ غير متوقع" };
+    return { success: false, error: handleActionError(e) };
   }
 }
 
@@ -197,6 +198,6 @@ export async function addRepDeduction(
     revalidatePath("/dashboard/sales/reps");
     return { success: true, data: undefined, message: "تم تسجيل الخصم بنجاح" };
   } catch (e: unknown) {
-    return { success: false, error: e instanceof Error ? e.message : "حدث خطأ غير متوقع" };
+    return { success: false, error: handleActionError(e) };
   }
 }

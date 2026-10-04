@@ -1,4 +1,6 @@
 import type { Metadata } from "next";
+import { Suspense } from "react";
+import { Skeleton } from "@/components/ui/skeleton";
 import Link from "next/link";
 import { getRequiredSession } from "@/lib/auth-utils";
 import { prisma } from "@/lib/prisma";
@@ -27,31 +29,6 @@ export const dynamic = "force-dynamic";
 
 export default async function DashboardPage() {
   const session = await getRequiredSession();
-
-  // Fetch all dashboard stats in parallel
-  const [salesStats, treasury, totalProducts, totalPharmacies, recentInvoices, recentAlerts] =
-    await Promise.all([
-      getSalesStats(),
-      getTreasury(),
-      prisma.product.count({ where: { isActive: true } }),
-      prisma.pharmacy.count({ where: { isActive: true } }),
-      prisma.invoice.findMany({
-        take: 5,
-        orderBy: { invoiceDate: "desc" },
-        include: {
-          pharmacy: { select: { name: true, governorate: { select: { name: true } } } },
-        },
-      }),
-      prisma.alert.findMany({
-        take: 4,
-        orderBy: { triggeredAt: "desc" },
-        where: { status: "UNREAD" },
-      }),
-    ]);
-
-  const todaySalesAmount = Number(salesStats.todayTotal);
-  const treasuryBalance = Number(treasury.currentBalance);
-  const totalReceivables = Number(salesStats.totalReceivables);
 
   return (
     <div className="space-y-6 animate-fade-in" dir="rtl">
@@ -93,6 +70,60 @@ export default async function DashboardPage() {
         </div>
       </div>
 
+      <Suspense fallback={<DashboardSkeleton />}>
+        <DashboardContent session={session} />
+      </Suspense>
+    </div>
+  );
+}
+
+function DashboardSkeleton() {
+  return (
+    <div className="space-y-6">
+      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
+        {[...Array(4)].map((_, i) => (
+          <Skeleton key={i} className="h-[104px] w-full rounded-xl" />
+        ))}
+      </div>
+      <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
+        <Skeleton className="lg:col-span-2 h-[400px] w-full rounded-xl" />
+        <div className="space-y-4">
+          <Skeleton className="h-[200px] w-full rounded-xl" />
+          <Skeleton className="h-[150px] w-full rounded-xl" />
+        </div>
+      </div>
+    </div>
+  );
+}
+
+async function DashboardContent({ session }: { session: any }) {
+  // Fetch all dashboard stats in parallel
+  const [salesStats, treasury, totalProducts, totalPharmacies, recentInvoices, recentAlerts] =
+    await Promise.all([
+      getSalesStats(),
+      getTreasury(),
+      prisma.product.count({ where: { isActive: true } }),
+      prisma.pharmacy.count({ where: { isActive: true } }),
+      prisma.invoice.findMany({
+        take: 5,
+        orderBy: { invoiceDate: "desc" },
+        include: {
+          pharmacy: { select: { name: true, governorate: { select: { name: true } } } },
+        },
+      }),
+      prisma.alert.findMany({
+        take: 4,
+        orderBy: { triggeredAt: "desc" },
+        where: { status: "UNREAD" },
+      }),
+    ]);
+
+  const todaySalesAmount = Number(salesStats.todayTotal);
+  const treasuryBalance = Number(treasury.currentBalance);
+  const totalReceivables = Number(salesStats.totalReceivables);
+
+  return (
+    <>
       {/* KPI Grid — staggered entrance animation */}
       <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
         {/* Sales Today */}
@@ -305,6 +336,6 @@ export default async function DashboardPage() {
           </div>
         </div>
       </div>
-    </div>
+    </>
   );
 }

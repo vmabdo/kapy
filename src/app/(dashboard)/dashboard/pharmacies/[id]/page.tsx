@@ -5,6 +5,8 @@ import { getAllSalesReps } from "@/queries/sales";
 import { ChangeRepForm } from "@/components/pharmacies/change-rep-form";
 import { Building2, ArrowRight, FileText, Target, Wallet, User, Phone, MapPin, BookOpen } from "lucide-react";
 import { formatCurrency, formatDate, cn } from "@/lib/utils";
+import { Suspense } from "react";
+import { Skeleton } from "@/components/ui/skeleton";
 import type { Metadata } from "next";
 
 interface Props {
@@ -19,19 +21,8 @@ export async function generateMetadata({ params }: Props): Promise<Metadata> {
 export const dynamic = "force-dynamic";
 
 export default async function PharmacyDetailPage({ params }: Props) {
-  const [pharmacy, salesReps] = await Promise.all([
-    getPharmacyById(params.id),
-    getAllSalesReps(),
-  ]);
-
+  const pharmacy = await getPharmacyById(params.id);
   if (!pharmacy) notFound();
-
-  const creditRatio = pharmacy.creditLimit ? Number(pharmacy.currentBalance) / Number(pharmacy.creditLimit) : 0;
-  const isCreditCritical = creditRatio >= 0.9;
-
-  const currentTarget = pharmacy.targetAttainments[0];
-  const targetRatio = currentTarget && Number(currentTarget.target) > 0 ? Number(currentTarget.achieved) / Number(currentTarget.target) : 0;
-  const targetPercentage = Math.min(100, Math.round(targetRatio * 100));
 
   return (
     <div>
@@ -78,6 +69,42 @@ export default async function PharmacyDetailPage({ params }: Props) {
         </div>
       </div>
 
+      <Suspense fallback={<PharmacySkeleton />}>
+        <PharmacyContent pharmacy={pharmacy} />
+      </Suspense>
+    </div>
+  );
+}
+
+function PharmacySkeleton() {
+  return (
+    <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
+      <div className="lg:col-span-2 space-y-6">
+        <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+          <Skeleton className="h-48 w-full rounded-xl" />
+          <Skeleton className="h-48 w-full rounded-xl" />
+        </div>
+        <Skeleton className="h-[400px] w-full rounded-xl" />
+      </div>
+      <div className="space-y-6">
+        <Skeleton className="h-[300px] w-full rounded-xl" />
+      </div>
+    </div>
+  );
+}
+
+async function PharmacyContent({ pharmacy }: { pharmacy: any }) {
+  const salesReps = await getAllSalesReps();
+
+  const creditRatio = pharmacy.creditLimit ? Number(pharmacy.currentBalance) / Number(pharmacy.creditLimit) : 0;
+  const isCreditCritical = creditRatio >= 0.9;
+
+  const currentTarget = pharmacy.targetAttainments[0];
+  const targetRatio = currentTarget && Number(currentTarget.target) > 0 ? Number(currentTarget.achieved) / Number(currentTarget.target) : 0;
+  const targetPercentage = Math.min(100, Math.round(targetRatio * 100));
+
+  return (
+    <>
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
         {/* Main Col */}
         <div className="lg:col-span-2 space-y-6">
@@ -269,6 +296,6 @@ export default async function PharmacyDetailPage({ params }: Props) {
         </div>
 
       </div>
-    </div>
+    </>
   );
 }

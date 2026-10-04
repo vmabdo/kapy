@@ -1,4 +1,5 @@
 "use server";
+import { handleActionError } from "@/lib/error-handler";
 
 import { prisma } from "@/lib/prisma";
 import { requireRole } from "@/lib/auth-utils";
@@ -89,7 +90,7 @@ export async function recordTreasuryTransaction(
   } catch (e: unknown) {
     return {
       success: false,
-      error: e instanceof Error ? e.message : "حدث خطأ غير متوقع",
+      error: handleActionError(e),
     };
   }
 }

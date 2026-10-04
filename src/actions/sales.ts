@@ -1,4 +1,5 @@
 "use server";
+import { handleActionError } from "@/lib/error-handler";
 
 import { prisma } from "@/lib/prisma";
 import { requireRole } from "@/lib/auth-utils";
@@ -425,10 +426,12 @@ export async function createInvoice(
     });
 
     revalidatePath("/dashboard/sales");
+    revalidatePath("/dashboard/reports/daily");
+    revalidatePath("/dashboard/treasury");
     revalidatePath(`/dashboard/pharmacies/${data.pharmacyId}`);
     return { success: true, data: { id: result.id }, message: "تم إصدار الفاتورة بنجاح" };
   } catch (e: unknown) {
-    return { success: false, error: e instanceof Error ? e.message : "حدث خطأ غير متوقع" };
+    return { success: false, error: handleActionError(e) };
   }
 }
 
@@ -577,10 +580,12 @@ export async function recordInvoicePayment(
     });
 
     revalidatePath("/dashboard/sales");
+    revalidatePath("/dashboard/reports/daily");
+    revalidatePath("/dashboard/treasury");
     revalidatePath(`/dashboard/sales/${data.invoiceId}`);
     return { success: true, data: undefined, message: "تم تسجيل الدفعة بنجاح" };
   } catch (e: unknown) {
-    return { success: false, error: e instanceof Error ? e.message : "حدث خطأ غير متوقع" };
+    return { success: false, error: handleActionError(e) };
   }
 }
 
@@ -642,7 +647,7 @@ export async function setRepMonthlyTarget(
     revalidatePath("/dashboard/sales-reps");
     return { success: true, data: { id: result.id }, message: "تم حفظ الأهداف الشهرية بنجاح" };
   } catch (e: unknown) {
-    return { success: false, error: e instanceof Error ? e.message : "حدث خطأ غير متوقع" };
+    return { success: false, error: handleActionError(e) };
   }
 }
 

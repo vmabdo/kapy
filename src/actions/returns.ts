@@ -1,4 +1,5 @@
 "use server";
+import { handleActionError } from "@/lib/error-handler";
 
 import { prisma } from "@/lib/prisma";
 import { requireRole } from "@/lib/auth-utils";
@@ -214,6 +215,6 @@ export async function processInvoiceReturn(
     revalidatePath(`/dashboard/sales/${data.invoiceId}`);
     return { success: true, message: "تم تسجيل المرتجع بنجاح" };
   } catch (e: unknown) {
-    return { success: false, error: e instanceof Error ? e.message : "حدث خطأ غير متوقع" };
+    return { success: false, error: handleActionError(e) };
   }
 }

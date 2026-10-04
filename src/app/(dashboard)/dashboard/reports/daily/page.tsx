@@ -6,7 +6,7 @@ import { formatCurrency, formatDate } from "@/lib/utils";
 import { PrintButton } from "../../sales/[id]/print-button";
 import { DailyDatePicker } from "./date-picker";
 import { Suspense } from "react";
-
+import { Skeleton } from "@/components/ui/skeleton";
 export const metadata: Metadata = { title: "التقرير اليومي" };
 export const dynamic = "force-dynamic";
 
@@ -20,6 +20,55 @@ export default async function DailyReportPage({ searchParams }: { searchParams: 
   tomorrow.setDate(tomorrow.getDate() + 1);
   const isToday = !searchParams?.date;
 
+  return (
+    <div className="max-w-5xl mx-auto print:max-w-full">
+      {/* Non-printable Navigation */}
+      <div className="print:hidden">
+        <nav className="flex items-center gap-2 text-sm text-muted-foreground mb-5">
+          <Link href="/dashboard/reports" className="hover:text-foreground transition-colors">التقارير</Link>
+          <ArrowRight className="w-3.5 h-3.5 rotate-180" />
+          <span className="text-foreground font-medium">التقرير اليومي</span>
+        </nav>
+        
+        <div className="page-header mb-6">
+          <div>
+            <h1 className="page-title flex items-center gap-2">
+              <CalendarDays className="w-6 h-6 text-primary" />
+              تقرير يومية الخزينة والمبيعات
+            </h1>
+            <p className="page-subtitle">عن يوم {formatDate(today)}{isToday && " (اليوم)"}</p>
+          </div>
+          <div className="flex items-center gap-3">
+            <Suspense fallback={null}>
+              <DailyDatePicker />
+            </Suspense>
+            <PrintButton />
+          </div>
+        </div>
+      </div>
+
+      <Suspense fallback={<ReportSkeleton />}>
+        <DailyReportContent today={today} tomorrow={tomorrow} />
+      </Suspense>
+    </div>
+  );
+}
+
+function ReportSkeleton() {
+  return (
+    <div className="bg-card border border-border rounded-xl p-8 space-y-8">
+      <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+        {[...Array(4)].map((_, i) => <Skeleton key={i} className="h-20 w-full" />)}
+      </div>
+      <div className="space-y-4">
+        <Skeleton className="h-8 w-64" />
+        <Skeleton className="h-64 w-full" />
+      </div>
+    </div>
+  );
+}
+
+async function DailyReportContent({ today, tomorrow }: { today: Date, tomorrow: Date }) {
   // Fetch today's data in parallel
   const [invoices, payments, treasuryOut, returnsList] = await Promise.all([
     // Today's invoices
@@ -61,10 +110,6 @@ export default async function DailyReportPage({ searchParams }: { searchParams: 
   const totalCollections = payments.reduce((s: number, p: any) => s + Number(p.amount), 0);
   const totalExpenses = treasuryOut.reduce((s: number, t: any) => s + Number(t.amount), 0);
   
-  // Net Cash Flow for today (Cash Sales + Collections from previous credits) - Expenses
-  // Actually, Cash Sales might be recorded as paid immediately, but let's assume they aren't fully integrated into Payments yet for this basic report, 
-  // or if they are, we just count them. Let's just sum cashSales + totalCollections - totalExpenses for net cash indicator.
-  // We'll show them separately for clarity.
   // Group invoices by pharmacy
   const pharmacyInvoices = invoices.reduce((acc: any, inv: any) => {
     if (!acc[inv.pharmacy.id]) {
@@ -80,31 +125,8 @@ export default async function DailyReportPage({ searchParams }: { searchParams: 
   }, {});
 
   return (
-    <div className="max-w-5xl mx-auto print:max-w-full">
-      {/* Non-printable Navigation */}
-      <div className="print:hidden">
-        <nav className="flex items-center gap-2 text-sm text-muted-foreground mb-5">
-          <Link href="/dashboard/reports" className="hover:text-foreground transition-colors">التقارير</Link>
-          <ArrowRight className="w-3.5 h-3.5 rotate-180" />
-          <span className="text-foreground font-medium">التقرير اليومي</span>
-        </nav>
-        
-        <div className="page-header mb-6">
-          <div>
-            <h1 className="page-title flex items-center gap-2">
-              <CalendarDays className="w-6 h-6 text-primary" />
-              تقرير يومية الخزينة والمبيعات
-            </h1>
-            <p className="page-subtitle">عن يوم {formatDate(today)}{isToday && " (اليوم)"}</p>
-          </div>
-          <div className="flex items-center gap-3">
-            <Suspense fallback={null}>
-              <DailyDatePicker />
-            </Suspense>
-            <PrintButton />
-          </div>
-        </div>
-      </div>
+
+    <>
 
       <div className="bg-card border border-border rounded-xl p-8 print:border print:border-gray-300 print:shadow-none print:p-0 print:rounded-none">
         
@@ -318,7 +340,7 @@ export default async function DailyReportPage({ searchParams }: { searchParams: 
         </div>
 
       </div>
-    </div>
+    </>
   );
 }
 

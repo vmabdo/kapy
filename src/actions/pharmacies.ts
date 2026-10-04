@@ -1,4 +1,5 @@
 "use server";
+import { handleActionError } from "@/lib/error-handler";
 
 import { prisma } from "@/lib/prisma";
 import { requireRole } from "@/lib/auth-utils";
@@ -82,7 +83,7 @@ export async function createPharmacy(
     revalidatePath("/dashboard/pharmacies");
     return { success: true, data: { id: result.id }, message: "تم تسجيل الصيدلية بنجاح" };
   } catch (e: unknown) {
-    return { success: false, error: e instanceof Error ? e.message : "حدث خطأ غير متوقع" };
+    return { success: false, error: handleActionError(e) };
   }
 }
 
@@ -113,7 +114,7 @@ export async function updatePharmacy(
     revalidatePath(`/dashboard/pharmacies/${id}`);
     return { success: true, data: undefined, message: "تم تحديث بيانات الصيدلية بنجاح" };
   } catch (e: unknown) {
-    return { success: false, error: e instanceof Error ? e.message : "حدث خطأ غير متوقع" };
+    return { success: false, error: handleActionError(e) };
   }
 }
 
@@ -143,7 +144,7 @@ export async function deletePharmacy(id: string): Promise<ActionResult> {
     revalidatePath("/dashboard/pharmacies");
     return { success: true, data: undefined, message: "تم حذف الصيدلية بنجاح" };
   } catch (e: unknown) {
-    return { success: false, error: e instanceof Error ? e.message : "حدث خطأ غير متوقع" };
+    return { success: false, error: handleActionError(e) };
   }
 }
 
@@ -180,6 +181,6 @@ export async function changeAssignedRep(data: z.infer<typeof ChangeRepSchema>): 
     
     return { success: true, data: undefined, message: "تم تغيير المندوب المسؤول بنجاح" };
   } catch (e: unknown) {
-    return { success: false, error: e instanceof Error ? e.message : "حدث خطأ غير متوقع" };
+    return { success: false, error: handleActionError(e) };
   }
 }

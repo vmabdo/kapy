@@ -1,4 +1,5 @@
 "use server";
+import { handleActionError } from "@/lib/error-handler";
 
 import { prisma } from "@/lib/prisma";
 import { requireRole } from "@/lib/auth-utils";
@@ -96,7 +97,7 @@ export async function createWarehouse(
     revalidatePath("/dashboard/inventory");
     return { success: true, data: { id: warehouse.id }, message: "تم إنشاء المخزن بنجاح" };
   } catch (e: unknown) {
-    return { success: false, error: e instanceof Error ? e.message : "حدث خطأ غير متوقع" };
+    return { success: false, error: handleActionError(e) };
   }
 }
 
@@ -108,7 +109,7 @@ export async function toggleWarehouseActive(id: string): Promise<ActionResult> {
     revalidatePath("/dashboard/inventory");
     return { success: true, data: undefined };
   } catch (e: unknown) {
-    return { success: false, error: e instanceof Error ? e.message : "حدث خطأ" };
+    return { success: false, error: handleActionError(e) };
   }
 }
 
@@ -128,7 +129,7 @@ export async function createProduct(
     revalidatePath("/dashboard/inventory");
     return { success: true, data: { id: product.id }, message: "تم إضافة المنتج بنجاح" };
   } catch (e: unknown) {
-    return { success: false, error: e instanceof Error ? e.message : "حدث خطأ غير متوقع" };
+    return { success: false, error: handleActionError(e) };
   }
 }
 
@@ -143,7 +144,7 @@ export async function updateProduct(
     revalidatePath(`/dashboard/inventory/products/${id}`);
     return { success: true, data: undefined, message: "تم تحديث المنتج بنجاح" };
   } catch (e: unknown) {
-    return { success: false, error: e instanceof Error ? e.message : "حدث خطأ" };
+    return { success: false, error: handleActionError(e) };
   }
 }
 
@@ -177,7 +178,7 @@ export async function deleteProduct(id: string): Promise<ActionResult> {
     revalidatePath("/dashboard/inventory/products");
     return { success: true, data: undefined, message: "تم حذف المنتج بنجاح" };
   } catch (e: unknown) {
-    return { success: false, error: e instanceof Error ? e.message : "حدث خطأ غير متوقع" };
+    return { success: false, error: handleActionError(e) };
   }
 }
 
@@ -193,7 +194,7 @@ export async function createCategory(
     revalidatePath("/dashboard/inventory");
     return { success: true, data: { id: cat.id } };
   } catch (e: unknown) {
-    return { success: false, error: e instanceof Error ? e.message : "حدث خطأ" };
+    return { success: false, error: handleActionError(e) };
   }
 }
 
@@ -213,7 +214,7 @@ export async function deleteCategory(id: string): Promise<ActionResult> {
     revalidatePath("/dashboard/inventory");
     return { success: true, data: undefined, message: "تم حذف الفئة بنجاح" };
   } catch (e: unknown) {
-    return { success: false, error: e instanceof Error ? e.message : "حدث خطأ" };
+    return { success: false, error: handleActionError(e) };
   }
 }
 
@@ -434,7 +435,7 @@ export async function createStockMovement(
     revalidatePath("/dashboard/inventory");
     return { success: true, data: { id: result.id }, message: "تمت حركة المخزون بنجاح" };
   } catch (e: unknown) {
-    return { success: false, error: e instanceof Error ? e.message : "حدث خطأ غير متوقع" };
+    return { success: false, error: handleActionError(e) };
   }
 }
 
@@ -461,7 +462,7 @@ export async function createSupplier(
     revalidatePath("/dashboard/inventory/suppliers");
     return { success: true, data: { id: supplier.id }, message: "تم إضافة المورد بنجاح" };
   } catch (e: unknown) {
-    return { success: false, error: e instanceof Error ? e.message : "حدث خطأ غير متوقع" };
+    return { success: false, error: handleActionError(e) };
   }
 }
 
@@ -487,7 +488,7 @@ export async function updateSupplier(
     revalidatePath("/dashboard/inventory/suppliers");
     return { success: true, data: undefined, message: "تم تحديث بيانات المورد بنجاح" };
   } catch (e: unknown) {
-    return { success: false, error: e instanceof Error ? e.message : "حدث خطأ غير متوقع" };
+    return { success: false, error: handleActionError(e) };
   }
 }
 
@@ -510,6 +511,6 @@ export async function deleteSupplier(id: string): Promise<ActionResult> {
     revalidatePath("/dashboard/inventory/suppliers");
     return { success: true, data: undefined, message: "تم حذف المورد بنجاح" };
   } catch (e: unknown) {
-    return { success: false, error: e instanceof Error ? e.message : "حدث خطأ غير متوقع" };
+    return { success: false, error: handleActionError(e) };
   }
 }

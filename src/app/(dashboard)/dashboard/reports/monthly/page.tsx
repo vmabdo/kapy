@@ -13,6 +13,8 @@ import {
   MapPin,
 } from "lucide-react";
 import { formatCurrency, cn } from "@/lib/utils";
+import { Suspense } from "react";
+import { Skeleton } from "@/components/ui/skeleton";
 import { PrintButton } from "../../sales/[id]/print-button";
 
 export const metadata: Metadata = { title: "التقرير الشهري" };
@@ -55,6 +57,185 @@ export default async function MonthlyReportPage({ searchParams }: PageProps) {
     ? { governorateId: selectedGovernorateId }
     : {};
 
+  // Build month label
+  const monthLabel = startOfMonth.toLocaleString("ar-EG", {
+    month: "long",
+    year: "numeric",
+  });
+
+  const selectedGovName =
+    governorates.find((g) => g.id === selectedGovernorateId)?.name ?? "الكل";
+
+  return (
+    <div className="max-w-5xl mx-auto print:max-w-full">
+      <div className="print:hidden">
+        <nav className="flex items-center gap-2 text-sm text-muted-foreground mb-5">
+          <Link
+            href="/dashboard/reports"
+            className="hover:text-foreground transition-colors"
+          >
+            التقارير
+          </Link>
+          <ArrowRight className="w-3.5 h-3.5 rotate-180" />
+          <span className="text-foreground font-medium">التقرير الشهري</span>
+        </nav>
+
+        <div className="page-header mb-6">
+          <div>
+            <h1 className="page-title flex items-center gap-2">
+              <CalendarRange className="w-6 h-6 text-primary" />
+              تقرير الأداء الشهري
+            </h1>
+            <p className="page-subtitle">
+              عن شهر {monthLabel}
+              {selectedGovernorateId && (
+                <span className="ml-2 px-2 py-0.5 rounded-full text-xs bg-primary/10 text-primary font-medium">
+                  محافظة: {selectedGovName}
+                </span>
+              )}
+            </p>
+          </div>
+          <PrintButton />
+        </div>
+
+        {/* ── Global Filters ── */}
+        <form
+          method="GET"
+          className="bg-card border border-border rounded-xl p-4 mb-6 flex flex-wrap items-end gap-4"
+        >
+          {/* Year */}
+          <div className="space-y-1">
+            <label className="text-xs font-medium text-muted-foreground">
+              السنة
+            </label>
+            <select
+              name="year"
+              defaultValue={year}
+              className="px-3 py-2 rounded-lg border border-border bg-background text-sm focus:outline-none focus:ring-2 focus:ring-primary/30"
+            >
+              {[now.getFullYear() - 1, now.getFullYear(), now.getFullYear() + 1].map(
+                (y) => (
+                  <option key={y} value={y}>
+                    {y}
+                  </option>
+                )
+              )}
+            </select>
+          </div>
+
+          {/* Month */}
+          <div className="space-y-1">
+            <label className="text-xs font-medium text-muted-foreground">
+              الشهر
+            </label>
+            <select
+              name="month"
+              defaultValue={month}
+              className="px-3 py-2 rounded-lg border border-border bg-background text-sm focus:outline-none focus:ring-2 focus:ring-primary/30"
+            >
+              {Array.from({ length: 12 }, (_, i) => i + 1).map((m) => {
+                const label = new Date(2000, m - 1, 1).toLocaleString("ar-EG", {
+                  month: "long",
+                });
+                return (
+                  <option key={m} value={m}>
+                    {label}
+                  </option>
+                );
+              })}
+            </select>
+          </div>
+
+          {/* Governorate */}
+          <div className="space-y-1">
+            <label className="text-xs font-medium text-muted-foreground flex items-center gap-1">
+              <MapPin className="w-3 h-3" />
+              المحافظة
+            </label>
+            <select
+              name="governorateId"
+              defaultValue={selectedGovernorateId}
+              className="px-3 py-2 rounded-lg border border-border bg-background text-sm focus:outline-none focus:ring-2 focus:ring-primary/30"
+            >
+              <option value="">الكل</option>
+              {governorates.map((gov) => (
+                <option key={gov.id} value={gov.id}>
+                  {gov.name}
+                </option>
+              ))}
+            </select>
+          </div>
+
+          <button
+            type="submit"
+            className="px-4 py-2 rounded-lg bg-primary text-primary-foreground text-sm font-medium hover:bg-primary/90 transition-colors"
+          >
+            تطبيق
+          </button>
+
+          {selectedGovernorateId && (
+            <Link
+              href="/dashboard/reports/monthly"
+              className="px-4 py-2 rounded-lg border border-border text-sm hover:bg-muted transition-colors text-muted-foreground"
+            >
+              إعادة ضبط
+            </Link>
+          )}
+        </form>
+      </div>
+
+      <Suspense fallback={<MonthlyReportSkeleton />}>
+        <MonthlyReportContent 
+          year={year} 
+          month={month} 
+          selectedGovernorateId={selectedGovernorateId}
+          startOfMonth={startOfMonth}
+          endOfMonth={endOfMonth}
+          startOfPrevMonth={startOfPrevMonth}
+          endOfPrevMonth={endOfPrevMonth}
+          monthLabel={monthLabel}
+          selectedGovName={selectedGovName}
+        />
+      </Suspense>
+    </div>
+  );
+}
+
+function MonthlyReportSkeleton() {
+  return (
+    <div className="bg-card border border-border rounded-xl p-8 space-y-8">
+      <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
+        {[...Array(3)].map((_, i) => <Skeleton key={i} className="h-32 w-full" />)}
+      </div>
+      <div className="space-y-4">
+        <Skeleton className="h-8 w-64" />
+        <Skeleton className="h-[400px] w-full" />
+      </div>
+    </div>
+  );
+}
+
+async function MonthlyReportContent({
+  year,
+  month,
+  selectedGovernorateId,
+  startOfMonth,
+  endOfMonth,
+  startOfPrevMonth,
+  endOfPrevMonth,
+  monthLabel,
+  selectedGovName
+}: {
+  year: number;
+  month: number;
+  selectedGovernorateId: string;
+  startOfMonth: Date;
+  endOfMonth: Date;
+  startOfPrevMonth: Date;
+  endOfPrevMonth: Date;
+  monthLabel: string;
+  selectedGovName: string;
+}) {
   const [currentInvoices, prevInvoices, targetPeriods, returnsList] =
     await Promise.all([
       // Current Month Invoices
@@ -231,133 +412,8 @@ export default async function MonthlyReportPage({ searchParams }: PageProps) {
     (a: any, b: any) => b.totalSales - a.totalSales
   );
 
-  // Build month label
-  const monthLabel = startOfMonth.toLocaleString("ar-EG", {
-    month: "long",
-    year: "numeric",
-  });
-
-  const selectedGovName =
-    governorates.find((g) => g.id === selectedGovernorateId)?.name ?? "الكل";
-
   return (
-    <div className="max-w-5xl mx-auto print:max-w-full">
-      <div className="print:hidden">
-        <nav className="flex items-center gap-2 text-sm text-muted-foreground mb-5">
-          <Link
-            href="/dashboard/reports"
-            className="hover:text-foreground transition-colors"
-          >
-            التقارير
-          </Link>
-          <ArrowRight className="w-3.5 h-3.5 rotate-180" />
-          <span className="text-foreground font-medium">التقرير الشهري</span>
-        </nav>
-
-        <div className="page-header mb-6">
-          <div>
-            <h1 className="page-title flex items-center gap-2">
-              <CalendarRange className="w-6 h-6 text-primary" />
-              تقرير الأداء الشهري
-            </h1>
-            <p className="page-subtitle">
-              عن شهر {monthLabel}
-              {selectedGovernorateId && (
-                <span className="ml-2 px-2 py-0.5 rounded-full text-xs bg-primary/10 text-primary font-medium">
-                  محافظة: {selectedGovName}
-                </span>
-              )}
-            </p>
-          </div>
-          <PrintButton />
-        </div>
-
-        {/* ── Global Filters ── */}
-        <form
-          method="GET"
-          className="bg-card border border-border rounded-xl p-4 mb-6 flex flex-wrap items-end gap-4"
-        >
-          {/* Year */}
-          <div className="space-y-1">
-            <label className="text-xs font-medium text-muted-foreground">
-              السنة
-            </label>
-            <select
-              name="year"
-              defaultValue={year}
-              className="px-3 py-2 rounded-lg border border-border bg-background text-sm focus:outline-none focus:ring-2 focus:ring-primary/30"
-            >
-              {[now.getFullYear() - 1, now.getFullYear(), now.getFullYear() + 1].map(
-                (y) => (
-                  <option key={y} value={y}>
-                    {y}
-                  </option>
-                )
-              )}
-            </select>
-          </div>
-
-          {/* Month */}
-          <div className="space-y-1">
-            <label className="text-xs font-medium text-muted-foreground">
-              الشهر
-            </label>
-            <select
-              name="month"
-              defaultValue={month}
-              className="px-3 py-2 rounded-lg border border-border bg-background text-sm focus:outline-none focus:ring-2 focus:ring-primary/30"
-            >
-              {Array.from({ length: 12 }, (_, i) => i + 1).map((m) => {
-                const label = new Date(2000, m - 1, 1).toLocaleString("ar-EG", {
-                  month: "long",
-                });
-                return (
-                  <option key={m} value={m}>
-                    {label}
-                  </option>
-                );
-              })}
-            </select>
-          </div>
-
-          {/* Governorate */}
-          <div className="space-y-1">
-            <label className="text-xs font-medium text-muted-foreground flex items-center gap-1">
-              <MapPin className="w-3 h-3" />
-              المحافظة
-            </label>
-            <select
-              name="governorateId"
-              defaultValue={selectedGovernorateId}
-              className="px-3 py-2 rounded-lg border border-border bg-background text-sm focus:outline-none focus:ring-2 focus:ring-primary/30"
-            >
-              <option value="">الكل</option>
-              {governorates.map((gov) => (
-                <option key={gov.id} value={gov.id}>
-                  {gov.name}
-                </option>
-              ))}
-            </select>
-          </div>
-
-          <button
-            type="submit"
-            className="px-4 py-2 rounded-lg bg-primary text-primary-foreground text-sm font-medium hover:bg-primary/90 transition-colors"
-          >
-            تطبيق
-          </button>
-
-          {selectedGovernorateId && (
-            <Link
-              href="/dashboard/reports/monthly"
-              className="px-4 py-2 rounded-lg border border-border text-sm hover:bg-muted transition-colors text-muted-foreground"
-            >
-              إعادة ضبط
-            </Link>
-          )}
-        </form>
-      </div>
-
+    <>
       <div className="bg-card border border-border rounded-xl p-8 print:border print:border-gray-300 print:shadow-none print:p-0 print:rounded-none">
         <div className="hidden print:flex justify-between items-start mb-8 pb-6 border-b border-border/50">
           <div>
@@ -779,6 +835,6 @@ export default async function MonthlyReportPage({ searchParams }: PageProps) {
           )}
         </div>
       </div>
-    </div>
+    </>
   );
 }
