@@ -8,6 +8,7 @@ import { createSalesRep } from "@/actions/reps";
 import { Users, Loader2, Plus, X } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { useRouter } from "next/navigation";
+import { toast } from "sonner";
 
 const Schema = z.object({
   name: z.string().min(2, "الاسم مطلوب"),
@@ -60,14 +61,14 @@ export function AddRepDialog({ governorates }: Props) {
     startTransition(async () => {
       const result = await createSalesRep(data as any);
       if (result.success) {
-        setSuccessMsg(result.message ?? "تم إضافة المندوب بنجاح");
+        toast.success(result.message ?? "تم إضافة المندوب بنجاح");
         reset();
         setTimeout(() => {
           setOpen(false);
-          setSuccessMsg(null);
           router.refresh();
-        }, 1200);
+        }, 300);
       } else {
+        toast.error("حدث خطأ", { description: result.error });
         setServerError(result.error);
       }
     });
@@ -167,11 +168,6 @@ export function AddRepDialog({ governorates }: Props) {
               {serverError && (
                 <div className="p-2 rounded-xl bg-red-50 dark:bg-red-900/10 border border-red-200 text-red-700 text-xs">
                   {serverError}
-                </div>
-              )}
-              {successMsg && (
-                <div className="p-2 rounded-xl bg-emerald-50 dark:bg-emerald-900/10 border border-emerald-200 text-emerald-700 text-xs">
-                  ✓ {successMsg}
                 </div>
               )}
 

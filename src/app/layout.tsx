@@ -33,6 +33,8 @@ export const metadata: Metadata = {
   robots: "noindex, nofollow",
 };
 
+import { Toaster } from "@/components/ui/sonner";
+
 export default function RootLayout({
   children,
 }: Readonly<{
@@ -45,6 +47,7 @@ export default function RootLayout({
           <TopLoader />
         </Suspense>
         <ReactQueryProvider>{children}</ReactQueryProvider>
+        <Toaster position="bottom-left" richColors />
       </body>
     </html>
   );

@@ -156,18 +156,23 @@ export default async function SalesPage({ searchParams }: PageProps) {
         </div>
 
         {invoices.length === 0 ? (
-          <div className="p-12 text-center text-muted-foreground">
-            <FileText className="w-10 h-10 mx-auto mb-3 opacity-25" />
-            <p className="font-medium">
-              {isFiltered ? "لا توجد فواتير تطابق المرشحات المحددة" : "لا توجد فواتير بعد"}
+          <div className="p-12 flex flex-col items-center justify-center text-center bg-muted/10 border border-dashed border-border/60 rounded-xl m-4">
+            <div className="w-16 h-16 bg-muted rounded-full flex items-center justify-center mb-4">
+              <FileText className="w-8 h-8 text-muted-foreground opacity-50" />
+            </div>
+            <h3 className="text-lg font-bold text-foreground mb-2">
+              {isFiltered ? "لا توجد فواتير تطابق المرشحات" : "لا توجد فواتير مسجلة"}
+            </h3>
+            <p className="text-sm text-muted-foreground mb-4">
+              {isFiltered ? "حاول تغيير أو إزالة المرشحات للوصول لنتائج أفضل." : "لم يتم تسجيل أي فواتير مبيعات في النظام حتى الآن."}
             </p>
             {isFiltered ? (
-              <Link href="/dashboard/sales" className="mt-3 inline-flex items-center gap-1 text-sm text-primary hover:underline">
-                <X className="w-3.5 h-3.5" /> إزالة المرشحات
+              <Link href="/dashboard/sales" className="inline-flex items-center gap-2 px-4 py-2 rounded-xl border border-border text-sm font-medium hover:bg-muted transition-colors">
+                <X className="w-4 h-4" /> إزالة المرشحات
               </Link>
             ) : (
-              <Link href="/dashboard/sales/new" className="mt-3 inline-flex items-center gap-1 text-sm text-primary hover:underline">
-                <Plus className="w-3.5 h-3.5" /> أنشئ فاتورة جديدة
+              <Link href="/dashboard/sales/new" className="inline-flex items-center gap-2 px-4 py-2 rounded-xl bg-primary text-primary-foreground text-sm font-medium hover:bg-primary/90 transition-colors">
+                <Plus className="w-4 h-4" /> أنشئ فاتورة جديدة
               </Link>
             )}
           </div>

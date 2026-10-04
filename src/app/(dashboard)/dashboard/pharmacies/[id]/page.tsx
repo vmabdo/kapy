@@ -189,12 +189,16 @@ async function PharmacyContent({ pharmacy }: { pharmacy: any }) {
               </h2>
             </div>
             {pharmacy.invoices.length === 0 ? (
-              <div className="p-8 text-center text-muted-foreground">
-                <FileText className="w-8 h-8 mx-auto mb-2 opacity-30" />
-                <p className="text-sm">لا توجد فواتير لهذه الصيدلية</p>
+              <div className="p-10 flex flex-col items-center justify-center text-center bg-muted/10 border border-dashed border-border/60 rounded-xl m-4">
+                <div className="w-12 h-12 bg-muted rounded-full flex items-center justify-center mb-3">
+                  <FileText className="w-6 h-6 text-muted-foreground opacity-50" />
+                </div>
+                <h3 className="text-sm font-bold text-foreground mb-1">لا توجد فواتير مسجلة</h3>
+                <p className="text-xs text-muted-foreground">لم يتم إصدار أي فواتير لهذه الصيدلية حتى الآن.</p>
               </div>
             ) : (
-              <table className="w-full text-sm">
+              <div className="overflow-x-auto">
+                <table className="w-full text-sm">
                 <thead>
                   <tr className="bg-muted/40 border-b border-border/60">
                     <th className="text-right px-4 py-2 font-medium text-muted-foreground">الرقم</th>
@@ -230,6 +234,7 @@ async function PharmacyContent({ pharmacy }: { pharmacy: any }) {
                   ))}
                 </tbody>
               </table>
+            </div>
             )}
             <div className="p-3 border-t border-border/60 bg-muted/20 text-center">
               <Link href="/dashboard/sales" className="text-xs text-primary hover:underline font-medium">

@@ -8,6 +8,7 @@ import { Undo2, Plus, Trash2, X } from "lucide-react";
 import { z } from "zod";
 import { formatCurrency } from "@/lib/utils";
 import { createPortal } from "react-dom";
+import { toast } from "sonner";
 
 const ReturnItemSchema = z.object({
   productId: z.string().min(1),
@@ -57,9 +58,11 @@ export function ReturnForm({ invoiceId, invoiceItems }: Props) {
     setServerError(null);
     const result = await processInvoiceReturn(data as any);
     if (result.success) {
+      toast.success("تم تسجيل المرتجع بنجاح");
       setIsOpen(false);
       form.reset();
     } else {
+      toast.error("حدث خطأ", { description: result.error || "حدث خطأ غير متوقع" });
       setServerError(result.error || "حدث خطأ غير متوقع");
     }
   };
@@ -80,7 +83,7 @@ export function ReturnForm({ invoiceId, invoiceItems }: Props) {
 
       {isOpen && createPortal(
         <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/50" dir="rtl">
-          <div className="bg-card w-full max-w-2xl max-h-[90vh] overflow-y-auto rounded-2xl shadow-xl border border-border">
+          <div className="bg-card w-[95vw] max-w-2xl max-h-[90vh] overflow-y-auto rounded-2xl shadow-xl border border-border">
             
             <div className="flex justify-between items-center p-5 border-b border-border">
               <div>
@@ -226,9 +229,15 @@ export function ReturnForm({ invoiceId, invoiceItems }: Props) {
                   <button 
                     type="submit" 
                     disabled={form.formState.isSubmitting}
-                    className="px-4 py-2 rounded-xl text-sm font-medium bg-red-600 text-white hover:bg-red-700 disabled:opacity-50"
+                    className="px-4 py-2 rounded-xl flex items-center justify-center gap-2 text-sm font-medium bg-red-600 text-white hover:bg-red-700 disabled:opacity-50"
                   >
-                    {form.formState.isSubmitting ? "جاري الحفظ..." : "تأكيد المرتجع"}
+                    {form.formState.isSubmitting ? (
+                      <>
+                        <Undo2 className="w-4 h-4 animate-spin" /> جاري الحفظ...
+                      </>
+                    ) : (
+                      "تأكيد المرتجع"
+                    )}
                   </button>
                 </div>
               </form>

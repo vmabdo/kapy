@@ -153,12 +153,16 @@ export default async function ProductDetailPage({ params }: Props) {
               </h2>
             </div>
             {product.stockItems.length === 0 ? (
-              <div className="p-10 text-center text-muted-foreground">
-                <Package className="w-8 h-8 mx-auto mb-2 opacity-25" />
-                <p className="text-sm">هذا المنتج غير متوفر في أي مخزن حالياً</p>
+              <div className="p-10 flex flex-col items-center justify-center text-center bg-muted/10 border border-dashed border-border/60 rounded-xl m-4">
+                <div className="w-12 h-12 bg-muted rounded-full flex items-center justify-center mb-3">
+                  <Package className="w-6 h-6 text-muted-foreground opacity-50" />
+                </div>
+                <h3 className="text-sm font-bold text-foreground mb-1">لا يوجد مخزون مسجل</h3>
+                <p className="text-xs text-muted-foreground">هذا المنتج غير متوفر في أي مخزن حالياً.</p>
               </div>
             ) : (
-              <table className="w-full text-sm">
+              <div className="overflow-x-auto">
+                <table className="w-full text-sm">
                 <thead>
                   <tr className="bg-muted/40 border-b border-border/60">
                     <th className="text-right px-5 py-3 font-medium text-muted-foreground">المخزن</th>
@@ -183,6 +187,7 @@ export default async function ProductDetailPage({ params }: Props) {
                   ))}
                 </tbody>
               </table>
+            </div>
             )}
           </div>
         </div>

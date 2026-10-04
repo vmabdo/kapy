@@ -5,6 +5,7 @@ import { useRouter } from "next/navigation";
 import { useForm } from "react-hook-form";
 import { zodResolver } from "@hookform/resolvers/zod";
 import { z } from "zod";
+import { toast } from "sonner";
 import { createCompany } from "@/actions/companies";
 import { Building2, Loader2, X, Plus } from "lucide-react";
 
@@ -44,10 +45,12 @@ export function CompanyFormModal({ governorates, salesReps }: Props) {
     startTransition(async () => {
       const result = await createCompany(data as any);
       if (result.success) {
+        toast.success("تم حفظ الشركة بنجاح");
         setIsOpen(false);
         form.reset();
         router.refresh();
       } else {
+        toast.error("حدث خطأ", { description: result.error });
         setServerError(result.error);
       }
     });
@@ -72,7 +75,7 @@ export function CompanyFormModal({ governorates, salesReps }: Props) {
           />
           
           {/* Modal Content */}
-          <div className="relative w-full max-w-2xl bg-card border border-border rounded-2xl shadow-xl p-6" dir="rtl">
+          <div className="relative w-full max-w-2xl bg-card border border-border rounded-2xl shadow-xl p-6 max-h-[90vh] overflow-y-auto" dir="rtl">
             <div className="flex items-center justify-between mb-6">
               <h2 className="text-xl font-bold flex items-center gap-2">
                 <Building2 className="w-5 h-5 text-primary" />

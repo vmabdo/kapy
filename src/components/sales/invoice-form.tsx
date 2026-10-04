@@ -26,6 +26,7 @@ import {
   Package,
 } from "lucide-react";
 import { cn, formatCurrency } from "@/lib/utils";
+import { toast } from "sonner";
 
 interface Props {
   pharmacies: { id: string; name: string; clientType: string; governorateId: string }[];
@@ -235,9 +236,11 @@ export function InvoiceForm({ pharmacies, salesReps, products, initialClientId }
         })),
       });
       if (result.success) {
+        toast.success("تم إصدار الفاتورة بنجاح");
         router.push(`/dashboard/sales/${result.data.id}`);
         router.refresh();
       } else {
+        toast.error("حدث خطأ", { description: result.error });
         setServerError(result.error);
         window.scrollTo({ top: 0, behavior: "smooth" });
       }

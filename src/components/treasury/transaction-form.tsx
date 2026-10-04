@@ -9,6 +9,7 @@ import { TransactionType, TransactionCategory } from "@prisma/client";
 import { recordTreasuryTransaction } from "@/actions/treasury";
 import { Wallet, Loader2, ArrowDown, ArrowUp } from "lucide-react";
 import { cn, formatCurrency } from "@/lib/utils";
+import { toast } from "sonner";
 
 interface Props {
   currentBalance: number;
@@ -68,9 +69,11 @@ export function TransactionForm({ currentBalance }: Props) {
     startTransition(async () => {
       const result = await recordTreasuryTransaction(data);
       if (result.success) {
+        toast.success("تم تسجيل المعاملة بنجاح");
         reset();
         router.refresh();
       } else {
+        toast.error("حدث خطأ", { description: result.error });
         setServerError(result.error);
       }
     });
@@ -153,8 +156,15 @@ export function TransactionForm({ currentBalance }: Props) {
           selectedType === TransactionType.CASH_IN ? "bg-green-600 hover:bg-green-700" : "bg-red-600 hover:bg-red-700"
         )}
       >
-        {isPending ? <Loader2 className="w-4 h-4 animate-spin" /> : <Wallet className="w-4 h-4" />}
-        تسجيل المعاملة
+        {isPending ? (
+          <>
+            <Loader2 className="w-4 h-4 animate-spin" /> جاري الحفظ...
+          </>
+        ) : (
+          <>
+            <Wallet className="w-4 h-4" /> تسجيل المعاملة
+          </>
+        )}
       </button>
     </form>
   );

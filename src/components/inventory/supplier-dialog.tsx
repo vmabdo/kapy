@@ -7,6 +7,7 @@ import { z } from "zod";
 import { createSupplier } from "@/actions/inventory";
 import { Truck, Loader2, Plus, X } from "lucide-react";
 import { cn } from "@/lib/utils";
+import { toast } from "sonner";
 
 const Schema = z.object({
   name: z.string().min(2, "اسم المورد مطلوب"),
@@ -45,14 +46,14 @@ export function SupplierDialog({ onSuccess }: SupplierDialogProps) {
     startTransition(async () => {
       const result = await createSupplier(data as any);
       if (result.success) {
-        setSuccessMsg(result.message ?? "تم إضافة المورد بنجاح");
+        toast.success(result.message ?? "تم إضافة المورد بنجاح");
         reset();
         setTimeout(() => {
           setOpen(false);
-          setSuccessMsg(null);
           onSuccess?.();
-        }, 1200);
+        }, 300);
       } else {
+        toast.error("حدث خطأ", { description: result.error });
         setServerError(result.error);
       }
     });
@@ -78,7 +79,7 @@ export function SupplierDialog({ onSuccess }: SupplierDialogProps) {
           onClick={(e) => { if (e.target === e.currentTarget) setOpen(false); }}
         >
           <div
-            className="bg-card border border-border rounded-2xl shadow-xl w-full max-w-md animate-scale-in"
+            className="bg-card border border-border rounded-2xl shadow-xl w-[95vw] max-w-md max-h-[90vh] overflow-y-auto animate-scale-in"
             dir="rtl"
           >
             {/* Header */}
@@ -132,11 +133,6 @@ export function SupplierDialog({ onSuccess }: SupplierDialogProps) {
               {serverError && (
                 <div className="p-3 rounded-xl bg-red-50 dark:bg-red-900/10 border border-red-200 dark:border-red-800/40 text-red-700 dark:text-red-400 text-sm">
                   {serverError}
-                </div>
-              )}
-              {successMsg && (
-                <div className="p-3 rounded-xl bg-emerald-50 dark:bg-emerald-900/10 border border-emerald-200 dark:border-emerald-800/40 text-emerald-700 dark:text-emerald-400 text-sm">
-                  ✓ {successMsg}
                 </div>
               )}
 

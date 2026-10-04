@@ -244,9 +244,16 @@ async function DailyReportContent({ today, tomorrow }: { today: Date, tomorrow: 
             التحصيلات النقدية اليوم ({payments.length})
           </h3>
           {payments.length === 0 ? (
-            <p className="text-sm text-muted-foreground italic">لا توجد تحصيلات مسجلة اليوم.</p>
+            <div className="p-10 flex flex-col items-center justify-center text-center bg-muted/10 border border-dashed border-border/60 rounded-xl m-4">
+              <div className="w-12 h-12 bg-muted rounded-full flex items-center justify-center mb-3">
+                <TrendingUp className="w-6 h-6 text-muted-foreground opacity-50" />
+              </div>
+              <h3 className="text-sm font-bold text-foreground mb-1">لا توجد تحصيلات</h3>
+              <p className="text-xs text-muted-foreground">لا توجد تحصيلات مسجلة اليوم.</p>
+            </div>
           ) : (
-            <table className="w-full text-sm border-collapse border border-border">
+            <div className="overflow-x-auto">
+              <table className="w-full text-sm border-collapse border border-border">
               <thead>
                 <tr className="bg-muted/40">
                   <th className="border border-border px-3 py-2 text-right">رقم الفاتورة</th>
@@ -266,6 +273,7 @@ async function DailyReportContent({ today, tomorrow }: { today: Date, tomorrow: 
                 ))}
               </tbody>
             </table>
+            </div>
           )}
         </div>
 
@@ -276,9 +284,16 @@ async function DailyReportContent({ today, tomorrow }: { today: Date, tomorrow: 
             المصروفات والمنصرف اليوم ({treasuryOut.length})
           </h3>
           {treasuryOut.length === 0 ? (
-            <p className="text-sm text-muted-foreground italic">لا توجد مصروفات مسجلة اليوم.</p>
+            <div className="p-10 flex flex-col items-center justify-center text-center bg-muted/10 border border-dashed border-border/60 rounded-xl m-4">
+              <div className="w-12 h-12 bg-muted rounded-full flex items-center justify-center mb-3">
+                <TrendingDown className="w-6 h-6 text-muted-foreground opacity-50" />
+              </div>
+              <h3 className="text-sm font-bold text-foreground mb-1">لا توجد مصروفات</h3>
+              <p className="text-xs text-muted-foreground">لا توجد مصروفات مسجلة اليوم.</p>
+            </div>
           ) : (
-            <table className="w-full text-sm border-collapse border border-border">
+            <div className="overflow-x-auto">
+              <table className="w-full text-sm border-collapse border border-border">
               <thead>
                 <tr className="bg-muted/40">
                   <th className="border border-border px-3 py-2 text-right">التصنيف</th>
@@ -298,6 +313,7 @@ async function DailyReportContent({ today, tomorrow }: { today: Date, tomorrow: 
                 ))}
               </tbody>
             </table>
+            </div>
           )}
         </div>
 
@@ -308,9 +324,16 @@ async function DailyReportContent({ today, tomorrow }: { today: Date, tomorrow: 
             حركة المرتجعات اليوم ({returnsList.length})
           </h3>
           {returnsList.length === 0 ? (
-            <p className="text-sm text-muted-foreground italic">لم يتم تسجيل أي مرتجعات اليوم.</p>
+            <div className="p-10 flex flex-col items-center justify-center text-center bg-muted/10 border border-dashed border-border/60 rounded-xl m-4">
+              <div className="w-12 h-12 bg-muted rounded-full flex items-center justify-center mb-3">
+                <Undo2 className="w-6 h-6 text-muted-foreground opacity-50" />
+              </div>
+              <h3 className="text-sm font-bold text-foreground mb-1">لا توجد مرتجعات</h3>
+              <p className="text-xs text-muted-foreground">لم يتم تسجيل أي مرتجعات اليوم.</p>
+            </div>
           ) : (
-            <table className="w-full text-sm border-collapse border border-border">
+            <div className="overflow-x-auto">
+              <table className="w-full text-sm border-collapse border border-border">
               <thead>
                 <tr className="bg-muted/40">
                   <th className="border border-border px-3 py-2 text-right">رقم المرتجع</th>
@@ -336,6 +359,7 @@ async function DailyReportContent({ today, tomorrow }: { today: Date, tomorrow: 
                 ))}
               </tbody>
             </table>
+            </div>
           )}
         </div>
 
