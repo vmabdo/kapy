@@ -49,6 +49,7 @@ export default function RootLayout({
         </Suspense>
         <ReactQueryProvider>{children}</ReactQueryProvider>
         <Toaster position="bottom-left" richColors />
+        <SpeedInsights />
       </body>
     </html>
   );
