@@ -2,7 +2,7 @@
 import { handleActionError } from "@/lib/error-handler";
 
 import { prisma } from "@/lib/prisma";
-import { requireRole } from "@/lib/auth-utils";
+import { requireRole, requireAuth } from "@/lib/auth-utils";
 import { revalidatePath } from "next/cache";
 import { DiscountType, InvoiceStatus, InvoiceType, UserRole, TransactionType, TransactionCategory } from "@prisma/client";
 import { z } from "zod";
@@ -53,8 +53,8 @@ const RecordPaymentSchema = z.object({
       z.object({
         productId: z.string().min(1),
         invoiceItemId: z.string().min(1),
-        paidQuantity: z.coerce.number().positive(),
-        unitPrice: z.coerce.number().positive(),
+        paidQuantity: z.coerce.number().min(0),
+        unitPrice: z.coerce.number().min(0),
       })
     )
     .optional(),
@@ -656,6 +656,7 @@ export async function getRepMonthlyTarget(
   month: number,
   year: number
 ) {
+  await requireAuth();
   return prisma.repMonthlyTarget.findUnique({
     where: { salesRepId_month_year: { salesRepId, month, year } },
     include: {

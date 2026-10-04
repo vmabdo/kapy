@@ -34,7 +34,7 @@ const Schema = z.object({
   unit: z.string().default("علبة"),
   packageSize: z.coerce.number().int().positive().default(1),
   sellingPrice: z.coerce.number().positive("أدخل سعر البيع"),
-  costPrice: z.coerce.number().optional(),
+  costPrice: z.coerce.number().min(0).optional(),
   vatRate: z.coerce.number().min(0).max(100).default(0),
   reorderLevel: z.coerce.number().int().min(0).default(0),
 });

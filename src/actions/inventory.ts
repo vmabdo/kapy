@@ -37,7 +37,7 @@ const CreateProductSchema = z.object({
   unit: z.string().default("علبة"),
   packageSize: z.coerce.number().int().positive().default(1),
   sellingPrice: z.coerce.number().positive("السعر يجب أن يكون موجباً"),
-  costPrice: z.coerce.number().optional(),
+  costPrice: z.coerce.number().min(0).optional(),
   vatRate: z.coerce.number().min(0).max(100).default(0),
   reorderLevel: z.coerce.number().int().min(0).default(0),
   requiresPrescription: z.boolean().default(false),
@@ -51,7 +51,7 @@ const CreateCategorySchema = z.object({
 const StockMovementItemSchema = z.object({
   productId: z.string().min(1),
   quantity: z.coerce.number().positive("الكمية يجب أن تكون موجبة"),
-  unitCost: z.coerce.number().optional(),
+  unitCost: z.coerce.number().min(0).optional(),
   expiryDate: z.string().optional(),
   batchNumber: z.string().optional(),
 });

@@ -2,7 +2,7 @@
 import { handleActionError } from "@/lib/error-handler";
 
 import { prisma } from "@/lib/prisma";
-import { requireRole } from "@/lib/auth-utils";
+import { requireRole, requireAuth } from "@/lib/auth-utils";
 import { revalidatePath } from "next/cache";
 import { UserRole } from "@prisma/client";
 import { z } from "zod";
@@ -32,6 +32,7 @@ const AdminCredentialsSchema = z.object({
 
 export async function markAlertsRead(): Promise<ActionResult> {
   try {
+    await requireAuth();
     await prisma.alert.updateMany({
       where: { status: "UNREAD" },
       data: { status: "READ", readAt: new Date() },

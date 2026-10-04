@@ -50,7 +50,7 @@ const ItemizedPaymentSchema = z.object({
         invoiceItemId: z.string(),
         productId: z.string(),
         paidQuantity: z.coerce.number().min(0),
-        unitPrice: z.coerce.number(),
+        unitPrice: z.coerce.number().min(0),
       })
     )
     .refine(

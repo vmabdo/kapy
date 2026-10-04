@@ -62,7 +62,7 @@ const Schema = z.object({
       z.object({
         productId: z.string().min(1, "اختر منتجاً"),
         quantity: z.coerce.number().positive("كمية صحيحة مطلوبة"),
-        unitCost: z.coerce.number().optional(),
+        unitCost: z.coerce.number().min(0).optional(),
         batchNumber: z.string().optional(),
       })
     )

@@ -78,10 +78,10 @@ export function isSalesRep(role: UserRole): boolean {
 export async function requireRole(allowedRoles: UserRole[]) {
   const session = await auth();
   if (!session?.user) {
-    throw new Error("Unauthorized: Not authenticated");
+    throw new Error("Unauthorized / غير مصرح لك بالقيام بهذا الإجراء");
   }
   if (!allowedRoles.includes(session.user.role)) {
-    throw new Error(`Forbidden: Role '${session.user.role}' is not allowed`);
+    throw new Error("Unauthorized / غير مصرح لك بالقيام بهذا الإجراء");
   }
   return session;
 }
@@ -92,7 +92,7 @@ export async function requireRole(allowedRoles: UserRole[]) {
 export async function requireAuth() {
   const session = await auth();
   if (!session?.user) {
-    throw new Error("Unauthorized: Not authenticated");
+    throw new Error("Unauthorized / غير مصرح لك بالقيام بهذا الإجراء");
   }
   return session;
 }
