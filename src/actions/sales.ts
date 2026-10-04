@@ -133,22 +133,21 @@ export async function createInvoice(
     // ── Validate warehouse stock availability ──
     // Stock check must consider quantity + bonusQuantity (total physical boxes)
     if (!data.isLegacy) {
+      const productIds = data.items.map((i) => i.productId);
+      const stockItems = await prisma.stockItem.findMany({
+        where: { warehouseId: subWarehouse.id, productId: { in: productIds } },
+        include: { product: { select: { name: true } } },
+      });
+      const stockItemMap = new Map(stockItems.map((si) => [si.productId, si]));
+
       for (const item of data.items) {
         const totalRequired = item.quantity + (item.bonusQuantity ?? 0);
-        const stockItem = await prisma.stockItem.findUnique({
-          where: {
-            warehouseId_productId: {
-              warehouseId: subWarehouse.id,
-              productId: item.productId,
-            },
-          },
-          include: { product: { select: { name: true } } },
-        });
+        const stockItem = stockItemMap.get(item.productId);
         const available = Number(stockItem?.quantity ?? 0) - Number(stockItem?.reservedQty ?? 0);
         if (available < totalRequired) {
           return {
             success: false,
-            error: `المخزون غير كافٍ في مخزن "${subWarehouse.name}" للمنتج "${stockItem?.product.name ?? item.productId}". المتاح: ${available}، المطلوب (بما في ذلك البونص): ${totalRequired}`,
+            error: `المخزون غير كافٍ في مخزن "${subWarehouse.name}" للمنتج "${stockItem?.product?.name ?? item.productId}". المتاح: ${available}، المطلوب (بما في ذلك البونص): ${totalRequired}`,
           };
         }
       }

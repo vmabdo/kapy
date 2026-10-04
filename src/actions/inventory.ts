@@ -271,16 +271,21 @@ export async function createStockMovement(
     ) {
       const sourceId = data.sourceWarehouseId;
       if (sourceId) {
+        const productIds = data.items.map(i => i.productId);
+        const stockItems = await prisma.stockItem.findMany({
+          where: { warehouseId: sourceId, productId: { in: productIds } },
+          include: { product: { select: { name: true } } }
+        });
+        const stockItemMap = new Map(stockItems.map(si => [si.productId, si]));
+
         for (const item of data.items) {
-          const stockItem = await prisma.stockItem.findUnique({
-            where: { warehouseId_productId: { warehouseId: sourceId, productId: item.productId } },
-          });
+          const stockItem = stockItemMap.get(item.productId);
           const available = (Number(stockItem?.quantity ?? 0)) - (Number(stockItem?.reservedQty ?? 0));
           if (available < item.quantity) {
-            const product = await prisma.product.findUnique({ where: { id: item.productId } });
+            const productName = stockItem?.product?.name ?? item.productId;
             return {
               success: false,
-              error: `المخزون غير كافٍ للمنتج "${product?.name ?? item.productId}". المتاح: ${available}، المطلوب: ${item.quantity}`,
+              error: `المخزون غير كافٍ للمنتج "${productName}". المتاح: ${available}، المطلوب: ${item.quantity}`,
             };
           }
         }
@@ -402,28 +407,24 @@ export async function createStockMovement(
         data.movementType === StockMovementType.OUTBOUND ||
         data.movementType === StockMovementType.RETURN_OUTBOUND;
       if (sourceReduces && data.sourceWarehouseId) {
-        for (const item of data.items) {
-          const stockItem = await tx.stockItem.findUnique({
-            where: {
-              warehouseId_productId: {
-                warehouseId: data.sourceWarehouseId!,
-                productId: item.productId,
-              },
-            },
-            include: { product: { select: { name: true, reorderLevel: true } } },
-          });
-          if (
-            stockItem &&
-            Number(stockItem.quantity) <= stockItem.product.reorderLevel
-          ) {
-            await tx.alert.create({
-              data: {
-                type: "LOW_STOCK",
-                title: "تنبيه: مخزون منخفض",
-                message: `المنتج "${stockItem.product.name}" وصل إلى مستوى إعادة الطلب (${stockItem.quantity} وحدة متبقية)`,
-              },
+        const productIds = data.items.map(i => i.productId);
+        const stockItems = await tx.stockItem.findMany({
+          where: { warehouseId: data.sourceWarehouseId!, productId: { in: productIds } },
+          include: { product: { select: { name: true, reorderLevel: true } } },
+        });
+
+        const alertsToCreate = [];
+        for (const stockItem of stockItems) {
+          if (Number(stockItem.quantity) <= stockItem.product.reorderLevel) {
+            alertsToCreate.push({
+              type: "LOW_STOCK" as const,
+              title: "تنبيه: مخزون منخفض",
+              message: `المنتج "${stockItem.product.name}" وصل إلى مستوى إعادة الطلب (${stockItem.quantity} وحدة متبقية)`,
             });
           }
+        }
+        if (alertsToCreate.length > 0) {
+          await tx.alert.createMany({ data: alertsToCreate });
         }
       }
 

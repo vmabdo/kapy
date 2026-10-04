@@ -80,33 +80,36 @@ export async function createSalesRep(
 
     let userId: string | null = null;
 
-    if (hasAccountCredentials) {
-      // Check email uniqueness only if creating an account
-      const existing = await prisma.user.findUnique({ where: { email: data.email! } });
-      if (existing) return { success: false, error: "هذا البريد الإلكتروني مستخدم بالفعل" };
-
-      const passwordHash = await bcrypt.hash(data.password!, 12);
-      const user = await prisma.user.create({
+    const rep = await prisma.$transaction(async (tx) => {
+      let currentUserId: string | null = null;
+      
+      if (hasAccountCredentials) {
+        const existing = await tx.user.findUnique({ where: { email: data.email! } });
+        if (existing) throw new Error("هذا البريد الإلكتروني مستخدم بالفعل");
+  
+        const passwordHash = await bcrypt.hash(data.password!, 12);
+        const user = await tx.user.create({
+          data: {
+            name: data.name,
+            email: data.email!,
+            passwordHash,
+            role: UserRole.SALES_REP,
+          },
+        });
+        currentUserId = user.id;
+      }
+  
+      return tx.salesRep.create({
         data: {
+          userId: currentUserId ?? undefined,
           name: data.name,
-          email: data.email!,
-          passwordHash,
-          role: UserRole.SALES_REP,
+          phone: data.phone || null,
+          employeeCode,
+          baseSalary: data.baseSalary,
+          monthlyTarget: 0,
+          governorateId: data.governorateId || null,
         },
       });
-      userId = user.id;
-    }
-
-    const rep = await prisma.salesRep.create({
-      data: {
-        userId: userId ?? undefined,
-        name: data.name,
-        phone: data.phone || null,
-        employeeCode,
-        baseSalary: data.baseSalary,
-        monthlyTarget: 0,
-        governorateId: data.governorateId || null,
-      },
     });
 
     revalidatePath("/dashboard/sales/reps");
