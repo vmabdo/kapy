@@ -67,9 +67,9 @@ export default async function RepDetailPage({ params }: { params: { id: string }
     <div dir="rtl" className="space-y-6">
       {/* Breadcrumb */}
       <nav className="flex items-center gap-2 text-sm text-muted-foreground">
-        <Link href="/dashboard/sales" className="hover:text-foreground transition-colors">المبيعات</Link>
+        <Link prefetch={false} href="/dashboard/sales" className="hover:text-foreground transition-colors">المبيعات</Link>
         <ArrowRight className="w-3.5 h-3.5 rotate-180" />
-        <Link href="/dashboard/sales/reps" className="hover:text-foreground transition-colors">المناديب</Link>
+        <Link prefetch={false} href="/dashboard/sales/reps" className="hover:text-foreground transition-colors">المناديب</Link>
         <ArrowRight className="w-3.5 h-3.5 rotate-180" />
         <span className="text-foreground font-medium">{rep.name}</span>
       </nav>
@@ -261,7 +261,7 @@ export default async function RepDetailPage({ params }: { params: { id: string }
                 <FileText className="w-4 h-4 text-primary" />
                 آخر الفواتير ({monthInvoices._count} هذا الشهر)
               </h3>
-              <Link href={`/dashboard/sales?repId=${rep.id}`} className="text-xs text-primary hover:underline">
+              <Link prefetch={false} href={`/dashboard/sales?repId=${rep.id}`} className="text-xs text-primary hover:underline">
                 عرض الكل
               </Link>
             </div>
@@ -286,7 +286,7 @@ export default async function RepDetailPage({ params }: { params: { id: string }
                     {rep.invoices.map((inv) => (
                       <tr key={inv.id} className="data-table-row">
                         <td className="data-table-cell font-mono text-primary">
-                          <Link href={`/dashboard/sales/${inv.id}`} className="hover:underline">
+                          <Link prefetch={false} href={`/dashboard/sales/${inv.id}`} className="hover:underline">
                             {inv.invoiceNumber}
                           </Link>
                         </td>
@@ -321,7 +321,7 @@ export default async function RepDetailPage({ params }: { params: { id: string }
               <div className="divide-y divide-border/50">
                 {rep.assignedPharmacies.map(({ pharmacy }) => (
                   <div key={pharmacy.id} className="px-5 py-3 flex justify-between items-center">
-                    <Link href={`/dashboard/pharmacies/${pharmacy.id}`} className="text-sm font-medium hover:text-primary hover:underline transition-colors">
+                    <Link prefetch={false} href={`/dashboard/pharmacies/${pharmacy.id}`} className="text-sm font-medium hover:text-primary hover:underline transition-colors">
                       {pharmacy.name}
                     </Link>
                     <div className="text-left text-xs text-muted-foreground tabular-nums">

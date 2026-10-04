@@ -75,7 +75,7 @@ export function ProductRowActions({ productId, productName }: Props) {
             style={{ top: menuPos.top, left: menuPos.left }}
             dir="rtl"
           >
-            <Link
+            <Link prefetch={false}
               href={`/dashboard/inventory/products/${productId}/edit`}
               onClick={() => setShowMenu(false)}
               className="flex items-center gap-2.5 px-3 py-2 text-sm text-foreground hover:bg-muted transition-colors w-full"

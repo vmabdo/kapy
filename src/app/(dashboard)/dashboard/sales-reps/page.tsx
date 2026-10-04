@@ -17,37 +17,37 @@ export default async function SalesRepsPage() {
 
   // Calculate current month stats per rep
   const now = new Date();
-  const repStats = await Promise.all(
-    reps.map(async (rep) => {
-      const [monthSales, bonusTotal, deductionTotal] = await Promise.all([
-        prisma.invoice.aggregate({
-          where: {
-            salesRepId: rep.id,
-            invoiceDate: { gte: new Date(now.getFullYear(), now.getMonth(), 1) },
-          },
-          _sum: { total: true },
-        }),
-        prisma.repBonus.aggregate({
-          where: { salesRepId: rep.id, periodYear: now.getFullYear(), periodMonth: now.getMonth() + 1 },
-          _sum: { amount: true },
-        }),
-        prisma.repDeduction.aggregate({
-          where: { salesRepId: rep.id, periodYear: now.getFullYear(), periodMonth: now.getMonth() + 1 },
-          _sum: { amount: true },
-        }),
-      ]);
+  
+  const [monthSalesAgg, bonusAgg, deductionAgg] = await Promise.all([
+    prisma.invoice.groupBy({
+      by: ['salesRepId'],
+      where: { invoiceDate: { gte: new Date(now.getFullYear(), now.getMonth(), 1) } },
+      _sum: { total: true },
+    }),
+    prisma.repBonus.groupBy({
+      by: ['salesRepId'],
+      where: { periodYear: now.getFullYear(), periodMonth: now.getMonth() + 1 },
+      _sum: { amount: true },
+    }),
+    prisma.repDeduction.groupBy({
+      by: ['salesRepId'],
+      where: { periodYear: now.getFullYear(), periodMonth: now.getMonth() + 1 },
+      _sum: { amount: true },
+    }),
+  ]);
 
-      const monthSalesTotal = Number(monthSales._sum.total ?? 0);
-      const target = Number(rep.monthlyTarget);
-      const achievement = target > 0 ? Math.min((monthSalesTotal / target) * 100, 100) : 0;
-      const netSalary =
-        Number(rep.baseSalary) +
-        Number(bonusTotal._sum.amount ?? 0) -
-        Number(deductionTotal._sum.amount ?? 0);
+  const repStats = reps.map((rep) => {
+    const monthSalesTotal = Number(monthSalesAgg.find(m => m.salesRepId === rep.id)?._sum.total ?? 0);
+    const target = Number(rep.monthlyTarget);
+    const achievement = target > 0 ? Math.min((monthSalesTotal / target) * 100, 100) : 0;
+    
+    const bonus = Number(bonusAgg.find(b => b.salesRepId === rep.id)?._sum.amount ?? 0);
+    const deduction = Number(deductionAgg.find(d => d.salesRepId === rep.id)?._sum.amount ?? 0);
+    
+    const netSalary = Number(rep.baseSalary) + bonus - deduction;
 
-      return { repId: rep.id, monthSalesTotal, achievement, netSalary };
-    })
-  );
+    return { repId: rep.id, monthSalesTotal, achievement, netSalary };
+  });
 
   const statsMap = new Map(repStats.map((s) => [s.repId, s]));
 
@@ -116,7 +116,7 @@ export default async function SalesRepsPage() {
                 : "bg-red-500";
 
             return (
-              <Link
+              <Link prefetch={false}
                 key={rep.id}
                 href={`/dashboard/sales-reps/${rep.id}`}
                 className="block section-card hover:border-primary/30 transition-all group"

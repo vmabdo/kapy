@@ -196,7 +196,7 @@ export function SidebarNav({ user }: SidebarNavProps) {
                 : pathname.startsWith(item.href);
 
             return (
-              <Link
+              <Link prefetch={false}
                 key={item.href}
                 href={item.href}
                 className={cn("nav-item", isActive && "active")}

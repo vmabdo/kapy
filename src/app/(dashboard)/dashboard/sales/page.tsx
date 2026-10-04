@@ -80,13 +80,13 @@ export default async function SalesPage({ searchParams }: PageProps) {
           <p className="page-subtitle">متابعة الفواتير النقدية والآجلة والتحصيلات</p>
         </div>
         <div className="flex gap-2">
-          <Link
+          <Link prefetch={false}
             href="/dashboard/sales-reps"
             className="flex items-center gap-2 px-4 py-2 rounded-xl border border-border text-sm font-medium hover:bg-muted transition-colors"
           >
             المناديب
           </Link>
-          <Link
+          <Link prefetch={false}
             href="/dashboard/sales/new"
             className="flex items-center gap-2 px-4 py-2 rounded-xl bg-primary text-primary-foreground text-sm font-medium hover:bg-primary/90 transition-colors"
           >
@@ -167,11 +167,11 @@ export default async function SalesPage({ searchParams }: PageProps) {
               {isFiltered ? "حاول تغيير أو إزالة المرشحات للوصول لنتائج أفضل." : "لم يتم تسجيل أي فواتير مبيعات في النظام حتى الآن."}
             </p>
             {isFiltered ? (
-              <Link href="/dashboard/sales" className="inline-flex items-center gap-2 px-4 py-2 rounded-xl border border-border text-sm font-medium hover:bg-muted transition-colors">
+              <Link prefetch={false} href="/dashboard/sales" className="inline-flex items-center gap-2 px-4 py-2 rounded-xl border border-border text-sm font-medium hover:bg-muted transition-colors">
                 <X className="w-4 h-4" /> إزالة المرشحات
               </Link>
             ) : (
-              <Link href="/dashboard/sales/new" className="inline-flex items-center gap-2 px-4 py-2 rounded-xl bg-primary text-primary-foreground text-sm font-medium hover:bg-primary/90 transition-colors">
+              <Link prefetch={false} href="/dashboard/sales/new" className="inline-flex items-center gap-2 px-4 py-2 rounded-xl bg-primary text-primary-foreground text-sm font-medium hover:bg-primary/90 transition-colors">
                 <Plus className="w-4 h-4" /> أنشئ فاتورة جديدة
               </Link>
             )}
@@ -197,7 +197,7 @@ export default async function SalesPage({ searchParams }: PageProps) {
                   return (
                     <tr key={invoice.id} className="data-table-row">
                       <td className="px-5 py-3">
-                        <Link href={`/dashboard/sales/${invoice.id}`} className="font-medium font-mono text-primary hover:underline">
+                        <Link prefetch={false} href={`/dashboard/sales/${invoice.id}`} className="font-medium font-mono text-primary hover:underline">
                           {invoice.invoiceNumber}
                         </Link>
                       </td>
@@ -234,7 +234,7 @@ export default async function SalesPage({ searchParams }: PageProps) {
                         {formatDate(invoice.invoiceDate)}
                       </td>
                       <td className="px-4 py-3 text-center">
-                        <Link href={`/dashboard/sales/${invoice.id}`} className="text-xs text-primary hover:underline">
+                        <Link prefetch={false} href={`/dashboard/sales/${invoice.id}`} className="text-xs text-primary hover:underline">
                           عرض
                         </Link>
                       </td>

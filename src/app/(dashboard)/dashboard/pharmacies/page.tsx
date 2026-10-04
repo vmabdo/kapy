@@ -24,7 +24,7 @@ export default async function PharmaciesPage() {
           </h1>
           <p className="page-subtitle">قاعدة بيانات الصيدليات، الديون، ومتابعة الأهداف البيعية</p>
         </div>
-        <Link
+        <Link prefetch={false}
           href="/dashboard/pharmacies/new"
           className="flex items-center gap-2 px-4 py-2 rounded-xl bg-primary text-primary-foreground text-sm font-medium hover:bg-primary/90 transition-colors"
         >
@@ -58,7 +58,7 @@ export default async function PharmaciesPage() {
                 stats.topPerformers.slice(0, 3).map((tp: any) => {
                   const percentage = Math.min(100, Math.round((Number(tp.achieved) / Number(tp.target)) * 100));
                   return (
-                    <Link key={tp.id} href={`/dashboard/pharmacies/${tp.pharmacyId}`} className="flex flex-col gap-1 hover:opacity-80 transition-opacity">
+                    <Link prefetch={false} key={tp.id} href={`/dashboard/pharmacies/${tp.pharmacyId}`} className="flex flex-col gap-1 hover:opacity-80 transition-opacity">
                       <p className="text-xs font-bold">{tp.pharmacy.name}</p>
                       <div className="flex items-center gap-2">
                         <div className="w-20 h-2 bg-background rounded-full overflow-hidden">
@@ -85,7 +85,7 @@ export default async function PharmaciesPage() {
           <div className="p-12 text-center text-muted-foreground">
             <Building2 className="w-10 h-10 mx-auto mb-3 opacity-25" />
             <p className="font-medium">لا توجد صيدليات مسجلة بعد</p>
-            <Link href="/dashboard/pharmacies/new" className="mt-3 inline-flex items-center gap-1 text-sm text-primary hover:underline">
+            <Link prefetch={false} href="/dashboard/pharmacies/new" className="mt-3 inline-flex items-center gap-1 text-sm text-primary hover:underline">
               <Plus className="w-3.5 h-3.5" /> سجل أول صيدلية
             </Link>
           </div>
@@ -110,7 +110,7 @@ export default async function PharmaciesPage() {
                   return (
                     <tr key={pharmacy.id} className="data-table-row">
                       <td className="px-5 py-3">
-                        <Link href={`/dashboard/pharmacies/${pharmacy.id}`} className="font-medium text-primary hover:underline">
+                        <Link prefetch={false} href={`/dashboard/pharmacies/${pharmacy.id}`} className="font-medium text-primary hover:underline">
                           {pharmacy.name}
                         </Link>
                         <p className="text-[10px] text-muted-foreground mt-0.5">{pharmacy._count.invoices} فواتير</p>

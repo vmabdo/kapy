@@ -24,53 +24,53 @@ export default async function SalesPerformancePage() {
   });
 
   // For each rep, get their current month sales aggregate
-  const repStats = await Promise.all(
-    reps.map(async (rep) => {
-      const [monthAgg, totalAgg, bonusAgg, deductionAgg] = await Promise.all([
-        prisma.invoice.aggregate({
-          where: {
-            salesRepId: rep.id,
-            invoiceDate: { gte: monthStart },
-          },
-          _sum: { total: true },
-          _count: true,
-        }),
-        prisma.invoice.aggregate({
-          where: { salesRepId: rep.id },
-          _sum: { total: true },
-          _count: true,
-        }),
-        prisma.repBonus.aggregate({
-          where: { salesRepId: rep.id, periodYear: currentYear, periodMonth: currentMonth },
-          _sum: { amount: true },
-        }),
-        prisma.repDeduction.aggregate({
-          where: { salesRepId: rep.id, periodYear: currentYear, periodMonth: currentMonth },
-          _sum: { amount: true },
-        }),
-      ]);
+  const [monthAgg, totalAgg, bonusAgg, deductionAgg] = await Promise.all([
+    prisma.invoice.groupBy({
+      by: ['salesRepId'],
+      where: { invoiceDate: { gte: monthStart } },
+      _sum: { total: true },
+      _count: true,
+    }),
+    prisma.invoice.groupBy({
+      by: ['salesRepId'],
+      _sum: { total: true },
+      _count: true,
+    }),
+    prisma.repBonus.groupBy({
+      by: ['salesRepId'],
+      where: { periodYear: currentYear, periodMonth: currentMonth },
+      _sum: { amount: true },
+    }),
+    prisma.repDeduction.groupBy({
+      by: ['salesRepId'],
+      where: { periodYear: currentYear, periodMonth: currentMonth },
+      _sum: { amount: true },
+    }),
+  ]);
 
-      const monthSales = Number(monthAgg._sum.total ?? 0);
-      const totalSales = Number(totalAgg._sum.total ?? 0);
-      const target = Number(rep.monthlyTarget);
-      const achievement = target > 0 ? Math.min((monthSales / target) * 100, 100) : 0;
-      const netSalary =
-        Number(rep.baseSalary) +
-        Number(bonusAgg._sum.amount ?? 0) -
-        Number(deductionAgg._sum.amount ?? 0);
+  const repStats = reps.map((rep) => {
+    const monthSales = Number(monthAgg.find(m => m.salesRepId === rep.id)?._sum.total ?? 0);
+    const totalSales = Number(totalAgg.find(t => t.salesRepId === rep.id)?._sum.total ?? 0);
+    
+    const target = Number(rep.monthlyTarget);
+    const achievement = target > 0 ? Math.min((monthSales / target) * 100, 100) : 0;
+    
+    const bonus = Number(bonusAgg.find(b => b.salesRepId === rep.id)?._sum.amount ?? 0);
+    const deduction = Number(deductionAgg.find(d => d.salesRepId === rep.id)?._sum.amount ?? 0);
+    
+    const netSalary = Number(rep.baseSalary) + bonus - deduction;
 
-      return {
-        rep,
-        monthSales,
-        totalSales,
-        monthInvoiceCount: monthAgg._count,
-        totalInvoiceCount: totalAgg._count,
-        target,
-        achievement,
-        netSalary,
-      };
-    })
-  );
+    return {
+      rep,
+      monthSales,
+      totalSales,
+      monthInvoiceCount: monthAgg.find(m => m.salesRepId === rep.id)?._count ?? 0,
+      totalInvoiceCount: totalAgg.find(t => t.salesRepId === rep.id)?._count ?? 0,
+      target,
+      achievement,
+      netSalary,
+    };
+  });
 
   // Sort by achievement desc
   const sortedStats = [...repStats].sort((a, b) => b.monthSales - a.monthSales);

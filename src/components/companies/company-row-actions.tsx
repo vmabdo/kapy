@@ -73,7 +73,7 @@ export function CompanyRowActions({ companyId, companyName }: Props) {
             style={{ top: menuPos.top, left: menuPos.left }}
             dir="rtl"
           >
-            <Link
+            <Link prefetch={false}
               href={`/dashboard/companies/${companyId}`}
               onClick={() => setShowMenu(false)}
               className="flex items-center gap-2.5 px-3 py-2 text-sm text-foreground hover:bg-muted transition-colors w-full"
@@ -81,7 +81,7 @@ export function CompanyRowActions({ companyId, companyName }: Props) {
               <Eye className="w-3.5 h-3.5 text-muted-foreground" />
               التفاصيل
             </Link>
-            <Link
+            <Link prefetch={false}
               href={`/dashboard/companies/${companyId}/edit`}
               onClick={() => setShowMenu(false)}
               className="flex items-center gap-2.5 px-3 py-2 text-sm text-foreground hover:bg-muted transition-colors w-full"

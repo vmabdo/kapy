@@ -15,7 +15,7 @@ export default async function ProductsPage() {
     <div>
       {/* Breadcrumb */}
       <nav className="flex items-center gap-2 text-sm text-muted-foreground mb-5">
-        <Link href="/dashboard/inventory" className="hover:text-foreground transition-colors">المخازن</Link>
+        <Link prefetch={false} href="/dashboard/inventory" className="hover:text-foreground transition-colors">المخازن</Link>
         <ArrowRight className="w-3.5 h-3.5 rotate-180" />
         <span className="text-foreground font-medium">المنتجات</span>
       </nav>
@@ -30,7 +30,7 @@ export default async function ProductsPage() {
             {products.length} منتج في {categories.length} فئة
           </p>
         </div>
-        <Link
+        <Link prefetch={false}
           href="/dashboard/inventory/products/new"
           className="flex items-center gap-2 px-4 py-2 rounded-xl bg-primary text-primary-foreground text-sm font-medium hover:bg-primary/90 transition-colors"
         >
@@ -63,7 +63,7 @@ export default async function ProductsPage() {
           <div className="p-12 text-center text-muted-foreground">
             <Package className="w-10 h-10 mx-auto mb-3 opacity-25" />
             <p className="font-medium">لا توجد منتجات بعد</p>
-            <Link href="/dashboard/inventory/products/new" className="mt-3 inline-flex items-center gap-1 text-sm text-primary hover:underline">
+            <Link prefetch={false} href="/dashboard/inventory/products/new" className="mt-3 inline-flex items-center gap-1 text-sm text-primary hover:underline">
               <Plus className="w-3.5 h-3.5" /> أضف أول منتج
             </Link>
           </div>
