@@ -1,6 +1,7 @@
 import type { Metadata, Viewport } from "next";
 import { Suspense } from "react";
 import { Tajawal } from "next/font/google";
+import { SpeedInsights } from "@vercel/speed-insights/next"
 import { ReactQueryProvider } from "@/components/providers/react-query-provider";
 import { TopLoader } from "@/components/layout/top-loader";
 import "./globals.css";
@@ -48,6 +49,7 @@ export default function RootLayout({
         </Suspense>
         <ReactQueryProvider>{children}</ReactQueryProvider>
         <Toaster position="bottom-left" richColors />
+        <SpeedInsights />
       </body>
     </html>
   );
