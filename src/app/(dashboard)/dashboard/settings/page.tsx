@@ -1,5 +1,6 @@
 import type { Metadata } from "next";
 import { prisma } from "@/lib/prisma";
+import { getSystemSettings } from "@/queries/settings";
 import { getRequiredSession } from "@/lib/auth-utils";
 import { Settings, Shield, Clock, AlertTriangle, KeyRound } from "lucide-react";
 import { SystemPoliciesForm } from "./system-policies-form";
@@ -10,7 +11,7 @@ export const dynamic = "force-dynamic";
 
 export default async function SettingsPage() {
   const [settings, session] = await Promise.all([
-    prisma.appSettings.findFirst(),
+    getSystemSettings(),
     getRequiredSession(),
   ]);
 

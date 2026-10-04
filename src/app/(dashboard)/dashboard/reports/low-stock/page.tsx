@@ -1,6 +1,7 @@
 import type { Metadata } from "next";
 import Link from "next/link";
 import { prisma } from "@/lib/prisma";
+import { getSystemSettings } from "@/queries/settings";
 import { AlertTriangle, ArrowRight, Package, BarChart3 } from "lucide-react";
 import { cn } from "@/lib/utils";
 
@@ -9,7 +10,7 @@ export const dynamic = "force-dynamic";
 
 export default async function LowStockReportPage() {
   // Get settings for threshold
-  const settings = await prisma.appSettings.findFirst();
+  const settings = await getSystemSettings();
   const globalThreshold = settings?.lowStockThreshold ?? 10;
 
   // Find all stock items where quantity <= product.reorderLevel (or global threshold if reorderLevel = 0)

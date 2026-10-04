@@ -141,7 +141,7 @@ export default async function RepDetailPage({ params }: { params: { id: string }
             أداء الشهر الحالي
           </h2>
           <div className="text-xs text-muted-foreground">
-            {now.toLocaleDateString("ar-EG", { month: "long", year: "numeric" })}
+            {formatDate(now, "ar-EG", { year: "numeric", month: "long", day: undefined })}
           </div>
         </div>
 

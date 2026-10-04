@@ -7,6 +7,8 @@ import { revalidatePath } from "next/cache";
 import { DiscountType, InvoiceStatus, InvoiceType, UserRole, TransactionType, TransactionCategory } from "@prisma/client";
 import { z } from "zod";
 import { addDays, format } from "date-fns";
+import { calculateDiscountAmount, calculateNetTotal } from "@/lib/utils";
+import { getSystemSettings } from "@/queries/settings";
 
 // ─── Schemas ──────────────────────────────────────────────────
 
@@ -161,16 +163,13 @@ export async function createInvoice(
     );
 
     // Calculate discount amount
-    let discountAmount = 0;
-    if (data.discountValue > 0) {
-      if (data.discountType === DiscountType.PERCENTAGE) {
-        discountAmount = (subtotal * data.discountValue) / 100;
-      } else {
-        discountAmount = data.discountValue;
-      }
-    }
+    const discountAmount = calculateDiscountAmount(
+      subtotal,
+      data.discountType,
+      data.discountValue
+    );
 
-    const totalAmount = Math.max(0, subtotal - discountAmount);
+    const totalAmount = calculateNetTotal(subtotal, discountAmount);
 
     // ── CRITICAL: Compute proportional discount factor per item ──
     // discountFactor = netTotal / grossSubtotal (1.0 means no discount)
@@ -183,7 +182,7 @@ export async function createInvoice(
     }));
 
     // Get settings for credit days
-    const settings = await prisma.appSettings.findFirst();
+    const settings = await getSystemSettings();
     const creditDays = settings?.defaultCreditDays ?? 30;
 
     let dueDate = null;

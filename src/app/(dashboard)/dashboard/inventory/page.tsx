@@ -9,7 +9,7 @@ import {
 } from "lucide-react";
 import { getAllWarehouses, getLowStockItems } from "@/queries/inventory";
 import { WarehouseType } from "@prisma/client";
-import { cn } from "@/lib/utils";
+import { cn, formatNumber } from "@/lib/utils";
 import { SupplierDialog } from "@/components/inventory/supplier-dialog";
 
 export const metadata: Metadata = { title: "إدارة المخازن" };
@@ -212,7 +212,7 @@ function WarehouseCard({
         <div className="bg-background/60 rounded-lg p-3">
           <p className="text-xs text-muted-foreground">إجمالي الوحدات</p>
           <p className="text-xl font-bold text-foreground mt-0.5">
-            {totalUnits.toLocaleString("ar-EG")}
+            {formatNumber(totalUnits)}
           </p>
         </div>
       </div>

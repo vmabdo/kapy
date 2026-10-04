@@ -2,7 +2,7 @@ import { notFound } from "next/navigation";
 import Link from "next/link";
 import { getWarehouseById } from "@/queries/inventory";
 import { ArrowRight, Warehouse, Package, AlertTriangle, ArrowLeftRight } from "lucide-react";
-import { cn, formatDate } from "@/lib/utils";
+import { cn, formatDate, formatNumber } from "@/lib/utils";
 import type { Metadata } from "next";
 
 interface Props {
@@ -68,7 +68,7 @@ export default async function WarehouseDetailPage({ params }: Props) {
       <div className="grid grid-cols-2 lg:grid-cols-4 gap-4 mb-6">
         <div className="stat-card">
           <p className="text-xs text-muted-foreground">إجمالي الوحدات</p>
-          <p className="text-2xl font-bold mt-1">{totalUnits.toLocaleString("ar-EG")}</p>
+          <p className="text-2xl font-bold mt-1">{formatNumber(totalUnits)}</p>
         </div>
         <div className="stat-card">
           <p className="text-xs text-muted-foreground">عدد المنتجات</p>

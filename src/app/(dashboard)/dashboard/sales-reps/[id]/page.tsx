@@ -161,7 +161,7 @@ export default async function RepDetailPage({ params }: { params: { id: string }
         <div className="section-card p-5">
           <h2 className="font-semibold text-sm flex items-center gap-2 mb-5">
             <Target className="w-4 h-4 text-primary" />
-            إنجاز أهداف المنتجات — {now.toLocaleDateString("ar-EG", { month: "long", year: "numeric" })}
+            إنجاز أهداف المنتجات — {formatDate(now, "ar-EG", { year: "numeric", month: "long", day: undefined })}
           </h2>
           {repMonthlyTarget && repMonthlyTarget.items.length > 0 ? (
             <div className="space-y-3">

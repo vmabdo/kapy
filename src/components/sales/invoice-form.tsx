@@ -25,7 +25,7 @@ import {
   Store,
   Package,
 } from "lucide-react";
-import { cn, formatCurrency } from "@/lib/utils";
+import { cn, formatCurrency, calculateDiscountAmount, calculateNetTotal } from "@/lib/utils";
 import { toast } from "sonner";
 
 interface Props {
@@ -136,14 +136,13 @@ export function InvoiceForm({ pharmacies, salesReps, products, initialClientId }
       0
     ) || 0;
 
-  const discountAmount =
-    (discountValue ?? 0) > 0
-      ? discountType === DiscountType.PERCENTAGE
-        ? (subtotal * (discountValue ?? 0)) / 100
-        : Number(discountValue ?? 0)
-      : 0;
+  const discountAmount = calculateDiscountAmount(
+    subtotal,
+    discountType ?? DiscountType.PERCENTAGE,
+    Number(discountValue ?? 0)
+  );
 
-  const total = Math.max(0, subtotal - discountAmount);
+  const total = calculateNetTotal(subtotal, discountAmount);
 
   // ── Proportional discount factor ──
   // Used to compute discountedUnitPrice per item for upfront payment and returns

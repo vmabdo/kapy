@@ -3,6 +3,11 @@ import { NextResponse } from "next/server";
 import type { NextRequest } from "next/server";
 import { UserRole } from "@prisma/client";
 
+// Rate limiting map (IP -> info)
+const rateLimits = new Map<string, { count: number; lastReset: number }>();
+const RATE_LIMIT_MAX = 50;
+const RATE_LIMIT_WINDOW = 10000; // 10 seconds
+
 /**
  * Route permission matrix.
  * Maps path prefixes to the minimum roles allowed to access them.
@@ -50,6 +55,25 @@ export default auth(((req: any) => {
   const isLoggedIn = !!session?.user;
   const isAuthPage = nextUrl.pathname.startsWith("/login");
   const isDashboard = nextUrl.pathname.startsWith("/dashboard");
+
+  // Apply rate limiting for POST requests (Server actions & API routes)
+  if (req.method === "POST") {
+    const ip = req.headers.get("x-forwarded-for") || req.headers.get("x-real-ip") || req.ip || "unknown";
+    const now = Date.now();
+    const limitInfo = rateLimits.get(ip) ?? { count: 0, lastReset: now };
+
+    if (now - limitInfo.lastReset > RATE_LIMIT_WINDOW) {
+      limitInfo.count = 0;
+      limitInfo.lastReset = now;
+    }
+
+    if (limitInfo.count >= RATE_LIMIT_MAX) {
+      return new NextResponse("429 Too Many Requests", { status: 429 });
+    }
+
+    limitInfo.count++;
+    rateLimits.set(ip, limitInfo);
+  }
 
   // Redirect unauthenticated users trying to access protected routes
   if (!isLoggedIn && isDashboard) {

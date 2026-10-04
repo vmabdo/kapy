@@ -1,7 +1,7 @@
 import type { Metadata } from "next";
 import Link from "next/link";
 import { prisma } from "@/lib/prisma";
-import { formatCurrency, cn } from "@/lib/utils";
+import { formatCurrency, formatDate, cn } from "@/lib/utils";
 import { TrendingUp, ArrowRight, Users, Target, FileText, Award } from "lucide-react";
 import { RepPerformanceTable } from "./rep-performance-table";
 
@@ -80,7 +80,7 @@ export default async function SalesPerformancePage() {
   const teamTarget = repStats.reduce((s, r) => s + r.target, 0);
   const teamAchievement = teamTarget > 0 ? Math.min((teamMonthSales / teamTarget) * 100, 100) : 0;
 
-  const monthLabel = now.toLocaleDateString("ar-EG", { month: "long", year: "numeric" });
+  const monthLabel = formatDate(now, "ar-EG", { year: "numeric", month: "long", day: undefined });
 
   return (
     <div dir="rtl" className="space-y-6">

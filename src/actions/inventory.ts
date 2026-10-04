@@ -3,7 +3,7 @@ import { handleActionError } from "@/lib/error-handler";
 
 import { prisma } from "@/lib/prisma";
 import { requireRole } from "@/lib/auth-utils";
-import { revalidatePath } from "next/cache";
+import { revalidatePath, revalidateTag } from "next/cache";
 import {
   WarehouseType,
   StockMovementType,
@@ -192,6 +192,7 @@ export async function createCategory(
     const data = CreateCategorySchema.parse(formData);
     const cat = await prisma.category.create({ data });
     revalidatePath("/dashboard/inventory");
+    revalidateTag("categories");
     return { success: true, data: { id: cat.id } };
   } catch (e: unknown) {
     return { success: false, error: handleActionError(e) };
@@ -212,6 +213,7 @@ export async function deleteCategory(id: string): Promise<ActionResult> {
 
     await prisma.category.delete({ where: { id } });
     revalidatePath("/dashboard/inventory");
+    revalidateTag("categories");
     return { success: true, data: undefined, message: "تم حذف الفئة بنجاح" };
   } catch (e: unknown) {
     return { success: false, error: handleActionError(e) };

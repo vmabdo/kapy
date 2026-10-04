@@ -3,7 +3,7 @@ import { handleActionError } from "@/lib/error-handler";
 
 import { prisma } from "@/lib/prisma";
 import { requireRole, requireAuth } from "@/lib/auth-utils";
-import { revalidatePath } from "next/cache";
+import { revalidatePath, revalidateTag } from "next/cache";
 import { UserRole } from "@prisma/client";
 import { z } from "zod";
 import bcrypt from "bcryptjs";
@@ -63,6 +63,7 @@ export async function updateSystemPolicies(
     }
 
     revalidatePath("/dashboard/settings");
+    revalidateTag("settings");
     return { success: true, data: undefined, message: "تم تحديث إعدادات النظام بنجاح" };
   } catch (e: unknown) {
     return { success: false, error: handleActionError(e) };

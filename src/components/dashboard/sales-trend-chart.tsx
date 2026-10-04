@@ -2,7 +2,7 @@
 
 import { useMemo } from "react";
 import { Area, AreaChart, ResponsiveContainer, Tooltip, XAxis, YAxis, CartesianGrid } from "recharts";
-import { formatCurrency } from "@/lib/utils";
+import { formatCurrency, formatDate } from "@/lib/utils";
 
 interface SalesTrendChartProps {
   data: { date: string; total: number }[];
@@ -13,7 +13,7 @@ export function SalesTrendChart({ data }: SalesTrendChartProps) {
     if (data.length === 0) return [];
     return data.map(item => ({
       ...item,
-      displayDate: new Date(item.date).toLocaleDateString("ar-EG", { month: "short", day: "numeric" })
+      displayDate: formatDate(item.date, "ar-EG", { year: undefined, month: "short", day: "numeric" })
     }));
   }, [data]);
 

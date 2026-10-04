@@ -1,5 +1,6 @@
 import { clsx, type ClassValue } from "clsx";
 import { twMerge } from "tailwind-merge";
+import { DiscountType } from "@prisma/client";
 
 /** Utility for merging Tailwind class names safely. */
 export function cn(...inputs: ClassValue[]) {
@@ -21,13 +22,29 @@ export function formatCurrency(
   }).format(num);
 }
 
+/** Format a number with locale formatting. */
+export function formatNumber(
+  value: number | string,
+  locale = "ar-EG",
+  opts?: Intl.NumberFormatOptions
+): string {
+  const num = typeof value === "string" ? parseFloat(value) : value;
+  if (isNaN(num)) return "0";
+  return new Intl.NumberFormat(locale, opts).format(num);
+}
+
 /** Format a date to a readable Arabic locale string. */
-export function formatDate(date: Date | string, locale = "ar-EG"): string {
+export function formatDate(
+  date: Date | string,
+  locale = "ar-EG",
+  opts?: Intl.DateTimeFormatOptions
+): string {
   const d = typeof date === "string" ? new Date(date) : date;
   return new Intl.DateTimeFormat(locale, {
     year: "numeric",
     month: "long",
     day: "numeric",
+    ...opts,
   }).format(d);
 }
 
@@ -72,4 +89,22 @@ export function generateReturnNumber(sequence: number): string {
   const year = new Date().getFullYear();
   const padded = String(sequence).padStart(5, "0");
   return `RET-${year}-${padded}`;
+}
+
+/** Calculate discount amount */
+export function calculateDiscountAmount(
+  subtotal: number,
+  discountType: DiscountType | string,
+  discountValue: number
+): number {
+  if (!discountValue || discountValue <= 0) return 0;
+  if (discountType === DiscountType.PERCENTAGE) {
+    return (subtotal * discountValue) / 100;
+  }
+  return Number(discountValue);
+}
+
+/** Calculate net total after discount */
+export function calculateNetTotal(subtotal: number, discountAmount: number): number {
+  return Math.max(0, subtotal - discountAmount);
 }

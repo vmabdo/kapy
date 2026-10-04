@@ -12,7 +12,7 @@ import {
   Users,
   MapPin,
 } from "lucide-react";
-import { formatCurrency, cn } from "@/lib/utils";
+import { formatCurrency, formatDate, cn } from "@/lib/utils";
 import { Suspense } from "react";
 import { Skeleton } from "@/components/ui/skeleton";
 import { PrintButton } from "../../sales/[id]/print-button";
@@ -58,9 +58,10 @@ export default async function MonthlyReportPage({ searchParams }: PageProps) {
     : {};
 
   // Build month label
-  const monthLabel = startOfMonth.toLocaleString("ar-EG", {
+  const monthLabel = formatDate(startOfMonth, "ar-EG", {
     month: "long",
     year: "numeric",
+    day: undefined,
   });
 
   const selectedGovName =
