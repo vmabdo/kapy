@@ -4,7 +4,7 @@ import { notFound } from "next/navigation";
 import { getSalesRepById } from "@/queries/sales";
 import { getAllProducts, getAllWarehouses } from "@/queries/inventory";
 import { prisma } from "@/lib/prisma";
-import { formatCurrency, formatDate, cn } from "@/lib/utils";
+import { formatCurrency, formatDate, formatNumber, cn } from "@/lib/utils";
 import {
   Users, ArrowRight, Phone, MapPin, Calendar,
   TrendingUp, FileText, Gift, Minus, DollarSign, Package, Target,
@@ -63,6 +63,84 @@ export default async function RepDetailPage({ params }: { params: { id: string }
   const totalBonuses = bonuses.reduce((s, b) => s + Number(b.amount), 0);
   const totalDeductions = deductions.reduce((s, d) => s + Number(d.amount), 0);
   const netSalary = Number(rep.baseSalary) + totalBonuses - totalDeductions;
+
+  // ─── Compute achievedValue per product from payments ──────────
+  // Logic: for each payment on the rep's invoices this month,
+  //   ratio = payment.amount / originalNetTotal
+  //   itemCollectedValue = (item.quantity * item.discountedUnitPrice) * ratio
+  //
+  // IMPORTANT — why we use (subtotal - discountAmount) and NOT invoice.total:
+  //   processInvoiceReturn() mutates invoice.total downward when a return is
+  //   recorded. Using the mutated total as the denominator would inflate the
+  //   paymentRatio for all existing payments on that invoice, artificially
+  //   boosting achievedValue. Returns must NOT affect the rep's target.
+  //   (subtotal - discountAmount) is the original net total frozen at invoice
+  //   creation time and is never touched by the return flow, making it the
+  //   only safe, stable denominator.
+  const achievedValueByProductId = new Map<string, number>();
+
+  if (repMonthlyTarget && repMonthlyTarget.items.length > 0) {
+    const targetProductIds = repMonthlyTarget.items.map((i) => i.productId);
+
+    // Fetch all payments for this rep's invoices in the current month.
+    // We include subtotal + discountAmount from the invoice so we can
+    // reconstruct the original (pre-return) net total as the denominator.
+    const paymentsWithContext = await prisma.payment.findMany({
+      where: {
+        invoice: {
+          salesRepId: rep.id,
+          invoiceDate: { gte: new Date(currentYear, currentMonth - 1, 1) },
+        },
+      },
+      select: {
+        amount: true,
+        // subtotal and discountAmount are immutable after invoice creation;
+        // returns only mutate `total`, `paidAmount`, and `remainingAmount`.
+        // Using (subtotal - discountAmount) as the ratio denominator keeps
+        // the calculation completely unaffected by any subsequent returns.
+        invoice: {
+          select: {
+            subtotal: true,
+            discountAmount: true,
+            items: {
+              where: { productId: { in: targetProductIds } },
+              select: {
+                productId: true,
+                quantity: true,
+                discountedUnitPrice: true,
+              },
+            },
+          },
+        },
+      },
+    });
+
+
+    for (const payment of paymentsWithContext) {
+      // Use the original net total (immutable): subtotal − discountAmount.
+      // This is completely unaffected by any return that was processed later.
+      const originalNetTotal =
+        Number(payment.invoice.subtotal) - Number(payment.invoice.discountAmount);
+
+      if (originalNetTotal <= 0) continue;
+
+      const paymentRatio = Number(payment.amount) / originalNetTotal;
+
+      for (const item of payment.invoice.items) {
+        // Net line value for this item, using the per-unit price already
+        // discounted proportionally at invoice creation time.
+        const itemNetLineValue =
+          Number(item.quantity) * Number(item.discountedUnitPrice);
+        const itemCollectedValue = itemNetLineValue * paymentRatio;
+
+        achievedValueByProductId.set(
+          item.productId,
+          (achievedValueByProductId.get(item.productId) ?? 0) + itemCollectedValue
+        );
+      }
+    }
+  }
+  // ─────────────────────────────────────────────────────────────
 
   return (
     <div dir="rtl" className="space-y-6">
@@ -158,49 +236,105 @@ export default async function RepDetailPage({ params }: { params: { id: string }
         </div>
 
         {/* Current Month Target Progress */}
-        <div className="section-card p-5">
+        <div className="section-card p-5 flex flex-col">
           <h2 className="font-semibold text-sm flex items-center gap-2 mb-5">
             <Target className="w-4 h-4 text-primary" />
             إنجاز أهداف المنتجات — {formatDate(now, "ar-EG", { year: "numeric", month: "long", day: undefined })}
           </h2>
           {repMonthlyTarget && repMonthlyTarget.items.length > 0 ? (
-            <div className="space-y-3">
-              {repMonthlyTarget.items.map((item) => {
-              const pct = Number(item.targetQuantity) > 0
-                  ? Math.min((Number(item.achievedQuantity) / Number(item.targetQuantity)) * 100, 100)
-                  : 0;
-                const color =
-                  pct >= 100 ? "bg-emerald-500" :
-                  pct >= 70  ? "bg-blue-500" :
-                  pct >= 40  ? "bg-amber-500" : "bg-red-500";
-                return (
-                  <div key={item.id} className="p-3 rounded-xl border border-border/50 bg-muted/20">
-                    <div className="flex justify-between items-center mb-2">
-                      <div>
-                        <p className="font-medium text-sm text-foreground">{item.product.name}</p>
-                        <p className="text-[11px] text-muted-foreground font-mono">{item.product.sku}</p>
+            <>
+              <div className="space-y-3 flex-1">
+                {repMonthlyTarget.items.map((item) => {
+                  const pct = Number(item.targetQuantity) > 0
+                    ? Math.min((Number(item.achievedQuantity) / Number(item.targetQuantity)) * 100, 100)
+                    : 0;
+                  const color =
+                    pct >= 100 ? "bg-emerald-500" :
+                    pct >= 70  ? "bg-blue-500" :
+                    pct >= 40  ? "bg-amber-500" : "bg-red-500";
+                  const achievedValue = achievedValueByProductId.get(item.productId) ?? 0;
+                  return (
+                    <div key={item.id} className="p-3 rounded-xl border border-border/50 bg-muted/20">
+                      {/* Header row: product name + percentage badge */}
+                      <div className="flex justify-between items-start mb-2">
+                        <div>
+                          <p className="font-medium text-sm text-foreground">{item.product.name}</p>
+                          <p className="text-[11px] text-muted-foreground font-mono">{item.product.sku}</p>
+                        </div>
+                        <span className={cn(
+                          "text-xs font-bold px-2 py-0.5 rounded-full shrink-0",
+                          pct >= 100 ? "bg-emerald-100 text-emerald-700" :
+                          pct >= 70  ? "bg-blue-100 text-blue-700" :
+                          pct >= 40  ? "bg-amber-100 text-amber-700" : "bg-red-100 text-red-700"
+                        )}>
+                          {Math.round(pct)}%
+                        </span>
                       </div>
-                      <span className={cn(
-                        "text-xs font-bold px-2 py-0.5 rounded-full",
-                        pct >= 100 ? "bg-emerald-100 text-emerald-700" :
-                        pct >= 70  ? "bg-blue-100 text-blue-700" :
-                        pct >= 40  ? "bg-amber-100 text-amber-700" : "bg-red-100 text-red-700"
-                      )}>
-                        {Math.round(pct)}%
-                      </span>
+                      {/* Progress bar + qty */}
+                      <div className="flex items-center gap-2 mb-2">
+                        <div className="flex-1 h-2 bg-muted rounded-full overflow-hidden">
+                          <div
+                            className={`h-full rounded-full transition-all duration-500 ${color}`}
+                            style={{ width: `${pct}%` }}
+                          />
+                        </div>
+                        <span className="text-xs text-muted-foreground whitespace-nowrap tabular-nums">
+                          {Number(item.achievedQuantity).toFixed(2)} / {Number(item.targetQuantity).toFixed(2)} {item.product.unit}
+                        </span>
+                      </div>
+                      {/* Achieved financial value badge */}
+                      <div className="flex items-center gap-1.5 mt-1">
+                        <span className="inline-flex items-center gap-1 text-[11px] font-medium px-2 py-0.5 rounded-md bg-primary/8 text-primary border border-primary/15">
+                          <DollarSign className="w-3 h-3 shrink-0" />
+                          القيمة:{" "}
+                          <span className="tabular-nums font-semibold">
+                            {formatNumber(achievedValue, "ar-EG", {
+                              minimumFractionDigits: 2,
+                              maximumFractionDigits: 2,
+                            })}{" "}ج.م
+                          </span>
+                        </span>
+                      </div>
                     </div>
-                    <div className="flex items-center gap-2">
-                      <div className="flex-1 h-2 bg-muted rounded-full overflow-hidden">
-                        <div className={`h-full rounded-full transition-all duration-500 ${color}`} style={{ width: `${pct}%` }} />
+                  );
+                })}
+              </div>
+
+              {/* Grand Total Footer */}
+              {(() => {
+                const grandTotalQty = repMonthlyTarget.items.reduce(
+                  (sum, item) => sum + Number(item.achievedQuantity),
+                  0
+                );
+                const grandTotalValue = repMonthlyTarget.items.reduce(
+                  (sum, item) => sum + (achievedValueByProductId.get(item.productId) ?? 0),
+                  0
+                );
+                return (
+                  <div className="mt-4 pt-3.5 border-t border-border/60">
+                    <div className="flex items-center justify-between flex-wrap gap-2">
+                      <div className="flex items-center gap-2">
+                        <Package className="w-3.5 h-3.5 text-muted-foreground" />
+                        <span className="text-xs text-muted-foreground">إجمالي العلب المحققة</span>
+                        <span className="text-sm font-bold tabular-nums text-foreground">
+                          {formatNumber(grandTotalQty, "ar-EG", {
+                            minimumFractionDigits: 2,
+                            maximumFractionDigits: 2,
+                          })} علبة
+                        </span>
                       </div>
-                      <span className="text-xs text-muted-foreground whitespace-nowrap tabular-nums">
-                        {Number(item.achievedQuantity).toFixed(2)} / {Number(item.targetQuantity).toFixed(2)} {item.product.unit}
-                      </span>
+                      <div className="flex items-center gap-2">
+                        <TrendingUp className="w-3.5 h-3.5 text-emerald-600" />
+                        <span className="text-xs text-muted-foreground">إجمالي القيمة المحصلة</span>
+                        <span className="text-sm font-bold tabular-nums text-emerald-600">
+                          {formatCurrency(grandTotalValue)}
+                        </span>
+                      </div>
                     </div>
                   </div>
                 );
-              })}
-            </div>
+              })()}
+            </>
           ) : (
             <div className="text-center py-8 text-muted-foreground">
               <Package className="w-10 h-10 mx-auto mb-3 opacity-25" />
