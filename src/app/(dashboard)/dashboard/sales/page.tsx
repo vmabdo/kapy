@@ -197,9 +197,16 @@ export default async function SalesPage({ searchParams }: PageProps) {
                   return (
                     <tr key={invoice.id} className="data-table-row">
                       <td className="px-5 py-3">
-                        <Link prefetch={false} href={`/dashboard/sales/${invoice.id}`} className="font-medium font-mono text-primary hover:underline">
-                          {invoice.invoiceNumber}
-                        </Link>
+                        <div className="flex items-center gap-2 flex-wrap">
+                          <Link prefetch={false} href={`/dashboard/sales/${invoice.id}`} className="font-medium font-mono text-primary hover:underline">
+                            {invoice.invoiceNumber}
+                          </Link>
+                          {invoice.isLegacy && (
+                            <span className="text-[10px] font-semibold px-2 py-0.5 rounded-full bg-amber-100 text-amber-800 dark:bg-amber-900/40 dark:text-amber-300 border border-amber-300/70 dark:border-amber-700/60">
+                              مديونية سابقة
+                            </span>
+                          )}
+                        </div>
                       </td>
                       <td className="px-4 py-3">
                         <p className="font-medium text-foreground">{invoice.pharmacy.name}</p>
@@ -212,11 +219,13 @@ export default async function SalesPage({ searchParams }: PageProps) {
                       <td className="px-4 py-3 text-center">
                         <span className={cn(
                           "text-[11px] font-medium px-2 py-0.5 rounded-full border",
-                          invoice.type === InvoiceType.CASH
+                          invoice.isLegacy
+                            ? "border-amber-300 text-amber-800 bg-amber-50 dark:border-amber-800/50 dark:text-amber-300 dark:bg-amber-900/20"
+                            : invoice.type === InvoiceType.CASH
                             ? "border-green-200 text-green-700 bg-green-50 dark:border-green-900/50 dark:text-green-400 dark:bg-green-900/10"
                             : "border-blue-200 text-blue-700 bg-blue-50 dark:border-blue-900/50 dark:text-blue-400 dark:bg-blue-900/10"
                         )}>
-                          {TYPE_LABELS[invoice.type]}
+                          {invoice.isLegacy ? "مديونية سابقة" : TYPE_LABELS[invoice.type]}
                         </span>
                       </td>
                       <td className="px-4 py-3 text-center font-semibold text-foreground">

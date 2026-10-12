@@ -255,6 +255,7 @@ model Product {
   stockMovementItems    StockMovementItem[]
   invoiceItems          InvoiceItem[]
   paymentItems          PaymentItem[]
+  paymentTargetItems    PaymentTargetItem[]
   repMonthlyTargetItems RepMonthlyTargetItem[]
   returnItems           ReturnItem[]
 
@@ -637,11 +638,13 @@ model Payment {
   createdAt   DateTime      @default(now())
 
   // Relations
-  invoice      Invoice       @relation(fields: [invoiceId], references: [id])
-  pharmacy     Pharmacy      @relation(fields: [pharmacyId], references: [id])
+  invoice      Invoice              @relation(fields: [invoiceId], references: [id])
+  pharmacy     Pharmacy             @relation(fields: [pharmacyId], references: [id])
   transaction  Transaction?
   /// NEW: Itemized breakdown — which products were paid for in this payment
   paymentItems PaymentItem[]
+  /// LEGACY DEBT: Dummy target items — only for rep target tracking, never touch stock
+  targetItems  PaymentTargetItem[]
 
   @@index([invoiceId])
   @@map("payments")
@@ -661,6 +664,23 @@ model PaymentItem {
   product Product @relation(fields: [productId], references: [id])
 
   @@map("payment_items")
+}
+
+/// LEGACY DEBT: Dummy product items recorded when a payment is made against a
+/// LEGACY invoice. Used exclusively for sales rep target calculations.
+/// CRITICAL: These items NEVER affect inventory stock levels.
+model PaymentTargetItem {
+  id        String  @id @default(cuid())
+  paymentId String
+  productId String
+  quantity  Int
+  price     Float
+
+  // Relations
+  payment Payment @relation(fields: [paymentId], references: [id], onDelete: Cascade)
+  product Product @relation(fields: [productId], references: [id])
+
+  @@map("payment_target_items")
 }
 
 // ============================================================

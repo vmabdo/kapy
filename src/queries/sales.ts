@@ -69,8 +69,17 @@ export async function getInvoiceById(id: string) {
           product: { select: { name: true, sku: true, unit: true } },
         },
       },
-      payments: { orderBy: { paidAt: "desc" }, include: { paymentItems: true } },
-      returns: { include: { items: true } },
+      payments: {
+        orderBy: { paidAt: "desc" },
+        include: {
+          paymentItems: true,
+          // LEGACY DEBT: target items for rep target tracking
+          targetItems: {
+            include: { product: { select: { id: true, name: true, unit: true } } },
+          },
+        },
+      },
+      returns: { include: { items: { include: { product: { select: { name: true } } } } } },
     },
   });
 }

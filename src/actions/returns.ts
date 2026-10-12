@@ -7,16 +7,31 @@ import { revalidatePath } from "next/cache";
 import { InvoiceStatus, InvoiceType, UserRole } from "@prisma/client";
 import { z } from "zod";
 
+// ─── Item schemas ─────────────────────────────────────────────
+
+// Standard return item — must match an invoice item
 const ReturnItemSchema = z.object({
   productId: z.string().min(1),
   quantity: z.coerce.number().positive("الكمية يجب أن تكون أكبر من 0"),
 });
 
+// LEGACY return item — free product selection + manual price
+const LegacyReturnItemSchema = z.object({
+  productId: z.string().min(1),
+  quantity: z.coerce.number().positive("الكمية يجب أن تكون أكبر من 0"),
+  unitPrice: z.coerce.number().min(0, "السعر يجب أن يكون 0 أو أكبر"),
+});
+
+// ─── Union schema ──────────────────────────────────────────────
+
 const ProcessReturnSchema = z.object({
   invoiceId: z.string().min(1),
   reason: z.string().optional(),
   notes: z.string().optional(),
-  items: z.array(ReturnItemSchema).min(1, "أضف منتجاً واحداً على الأقل"),
+  // Standard items (used when invoice.isLegacy === false)
+  items: z.array(ReturnItemSchema).optional().default([]),
+  // LEGACY items — free product, free price, free quantity
+  legacyItems: z.array(LegacyReturnItemSchema).optional().default([]),
 });
 
 export async function processInvoiceReturn(
@@ -55,11 +70,137 @@ export async function processInvoiceReturn(
         subWarehouse ??
         (await tx.warehouse.findFirst({ where: { type: "MAIN" } }));
 
-      // Calculate the total return value and build return items
+      // Generate Return Number
+      const returnCount = await tx.return.count();
+      const returnNumber = `RET-${new Date().getFullYear()}${String(new Date().getMonth() + 1).padStart(2, "0")}-${returnCount + 1}`;
+
+      // ══════════════════════════════════════════════════════════════
+      // LEGACY INVOICE RETURN FLOW
+      // ══════════════════════════════════════════════════════════════
+      if (invoice.isLegacy) {
+        const legacyItems = data.legacyItems ?? [];
+        if (legacyItems.length === 0) {
+          throw new Error("أضف منتجاً واحداً على الأقل للارتجاع");
+        }
+
+        // Calculate total return amount from manually-entered prices
+        let totalReturnAmount = 0;
+        const returnItemsData = legacyItems.map((item) => {
+          const lineTotal = item.quantity * item.unitPrice;
+          totalReturnAmount += lineTotal;
+          return {
+            productId: item.productId,
+            quantity: item.quantity,
+            unitPrice: item.unitPrice,
+            lineTotal,
+          };
+        });
+
+        // 1. Create Return Record
+        const returnRecord = await tx.return.create({
+          data: {
+            returnNumber,
+            invoiceId: invoice.id,
+            pharmacyId: invoice.pharmacyId,
+            reason: data.reason,
+            notes: data.notes,
+            totalAmount: totalReturnAmount,
+            items: {
+              create: returnItemsData,
+            },
+          },
+        });
+
+        // 2. INCREASE stock in pharmacy's governorate warehouse
+        // LEGACY returns go back into the client's governorate warehouse
+        if (targetWarehouse) {
+          for (const item of legacyItems) {
+            await tx.stockItem.upsert({
+              where: {
+                warehouseId_productId: {
+                  warehouseId: targetWarehouse.id,
+                  productId: item.productId,
+                },
+              },
+              create: {
+                warehouseId: targetWarehouse.id,
+                productId: item.productId,
+                quantity: item.quantity,
+              },
+              update: {
+                quantity: { increment: item.quantity },
+              },
+            });
+          }
+
+          // Record stock movement for audit trail
+          await tx.stockMovement.create({
+            data: {
+              movementType: "RETURN_INBOUND",
+              source: "PHARMACY",
+              targetWarehouseId: targetWarehouse.id,
+              notes: `مرتجع مديونية سابقة رقم ${returnNumber} من ${invoice.pharmacy.name}`,
+              items: {
+                create: legacyItems.map((item) => ({
+                  productId: item.productId,
+                  quantity: item.quantity,
+                })),
+              },
+            },
+          });
+        }
+
+        // 3. ACCOUNTING: Deduct return value from invoice remaining balance ONLY.
+        // CRITICAL: This is NOT a treasury cash-in. It's an accounting reduction
+        // of the legacy debt. No money moves to the treasury.
+        const currentRemaining = Number(invoice.remainingAmount);
+        const newRemaining = Math.max(0, currentRemaining - totalReturnAmount);
+        const newPaid = Number(invoice.paidAmount);
+
+        let newStatus = invoice.status;
+        const newTotal = Math.max(0, Number(invoice.total) - totalReturnAmount);
+        if (newTotal <= 0) {
+          newStatus = InvoiceStatus.CANCELLED;
+        } else if (newRemaining <= 0.01) {
+          newStatus = InvoiceStatus.PAID;
+        } else if (newPaid > 0) {
+          newStatus = InvoiceStatus.PARTIALLY_PAID;
+        }
+
+        await tx.invoice.update({
+          where: { id: invoice.id },
+          data: {
+            total: newTotal,
+            remainingAmount: newRemaining,
+            status: newStatus,
+          },
+        });
+
+        // Also reduce the pharmacy's outstanding debt (balance) since the return
+        // effectively cancels part of their legacy obligation
+        await tx.pharmacy.update({
+          where: { id: invoice.pharmacyId },
+          data: { currentBalance: { decrement: Math.min(totalReturnAmount, currentRemaining) } },
+        });
+
+        // NOTE: CRITICAL — Returns NEVER affect rep targets.
+        // We do NOT touch RepMonthlyTargetItem achievedQuantity here.
+
+        return returnRecord;
+      }
+
+      // ══════════════════════════════════════════════════════════════
+      // STANDARD INVOICE RETURN FLOW (unchanged)
+      // ══════════════════════════════════════════════════════════════
+      const standardItems = data.items ?? [];
+      if (standardItems.length === 0) {
+        throw new Error("أضف منتجاً واحداً على الأقل للارتجاع");
+      }
+
       let totalReturnAmount = 0;
       const returnItemsData = [];
 
-      for (const returnItem of data.items) {
+      for (const returnItem of standardItems) {
         // Find the corresponding item in the invoice to get its discountedUnitPrice
         const invItem = invoice.items.find((i) => i.productId === returnItem.productId);
         if (!invItem) {
@@ -71,7 +212,6 @@ export async function processInvoiceReturn(
 
         // CRITICAL: Use discountedUnitPrice — this is the effective price per unit
         // after the invoice discount was applied, stored at invoice creation time.
-        // This guarantees the refund matches exactly what was charged.
         const effectiveUnitPrice = Number(invItem.discountedUnitPrice) > 0
           ? Number(invItem.discountedUnitPrice)
           : Number(invItem.unitPrice); // fallback for legacy invoices without discountedUnitPrice
@@ -87,10 +227,6 @@ export async function processInvoiceReturn(
           lineTotal: discountedLineTotal,
         });
       }
-
-      // Generate Return Number
-      const returnCount = await tx.return.count();
-      const returnNumber = `RET-${new Date().getFullYear()}${String(new Date().getMonth() + 1).padStart(2, "0")}-${returnCount + 1}`;
 
       // 1. Create Return Record
       const returnRecord = await tx.return.create({
@@ -109,7 +245,7 @@ export async function processInvoiceReturn(
 
       // 2. Return items to the client's governorate warehouse
       if (targetWarehouse) {
-        for (const item of data.items) {
+        for (const item of standardItems) {
           await tx.stockItem.upsert({
             where: {
               warehouseId_productId: {
@@ -136,7 +272,7 @@ export async function processInvoiceReturn(
             targetWarehouseId: targetWarehouse.id,
             notes: `مرتجع رقم ${returnNumber} من ${invoice.pharmacy.name}`,
             items: {
-              create: data.items.map((item) => ({
+              create: standardItems.map((item) => ({
                 productId: item.productId,
                 quantity: item.quantity,
               })),

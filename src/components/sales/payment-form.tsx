@@ -23,10 +23,26 @@ interface InvoiceItemForPayment {
   lineTotal: number;
 }
 
+export interface ProductOption {
+  id: string;
+  name: string;
+  sku?: string;
+  unit?: string;
+  price?: number;
+}
+
+interface LegacyTargetItemInput {
+  productId: string;
+  quantity: number;
+  price: number;
+}
+
 interface Props {
   invoiceId: string;
   remainingAmount: number;
   invoiceItems?: InvoiceItemForPayment[];
+  isLegacy?: boolean;
+  allProducts?: ProductOption[];
 }
 
 // ─── Schemas ──────────────────────────────────────────────────
@@ -71,12 +87,20 @@ const METHOD_LABELS: Record<string, string> = {
 
 // ─── Component ────────────────────────────────────────────────
 
-export function PaymentForm({ invoiceId, remainingAmount, invoiceItems = [] }: Props) {
+export function PaymentForm({
+  invoiceId,
+  remainingAmount,
+  invoiceItems = [],
+  isLegacy = false,
+  allProducts = [],
+}: Props) {
   const router = useRouter();
   const [isPending, startTransition] = useTransition();
   const [serverError, setServerError] = useState<string | null>(null);
   const [mode, setMode] = useState<PaymentMode>("FLAT");
   const [successMsg, setSuccessMsg] = useState<string | null>(null);
+  const [includeTargetItems, setIncludeTargetItems] = useState(false);
+  const [targetItems, setTargetItems] = useState<LegacyTargetItemInput[]>([]);
 
   // ─── Flat payment form ────────────────────────────────────
   const flatForm = useForm<z.infer<typeof FlatPaymentSchema>>({
@@ -117,16 +141,30 @@ export function PaymentForm({ invoiceId, remainingAmount, invoiceItems = [] }: P
     setServerError(null);
     setSuccessMsg(null);
     startTransition(async () => {
+      const activeTargets =
+        isLegacy && includeTargetItems
+          ? targetItems
+              .filter((ti) => ti.productId && Number(ti.quantity) > 0)
+              .map((ti) => ({
+                productId: ti.productId,
+                quantity: Number(ti.quantity),
+                price: Number(ti.price) || 0,
+              }))
+          : undefined;
+
       const result = await recordInvoicePayment({
         invoiceId: data.invoiceId,
         amount: data.amount,
         method: data.method,
         referenceNo: data.referenceNo,
         notes: data.notes,
+        targetItems: activeTargets && activeTargets.length > 0 ? activeTargets : undefined,
       });
       if (result.success) {
         setSuccessMsg(result.message ?? "تم تسجيل الدفعة بنجاح");
         flatForm.reset({ invoiceId, amount: 0, method: "CASH" });
+        setTargetItems([]);
+        setIncludeTargetItems(false);
         router.refresh();
       } else {
         setServerError(result.error);
@@ -173,7 +211,12 @@ export function PaymentForm({ invoiceId, remainingAmount, invoiceItems = [] }: P
       <div className="flex items-center justify-between mb-4">
         <h2 className="font-semibold text-sm flex items-center gap-2">
           <Banknote className="w-4 h-4 text-green-600" />
-          تسجيل دفعة (سداد)
+          {isLegacy ? "سداد مديونية سابقة" : "تسجيل دفعة (سداد)"}
+          {isLegacy && (
+            <span className="text-[10px] bg-amber-100 dark:bg-amber-900/30 text-amber-700 dark:text-amber-400 px-2 py-0.5 rounded-full font-medium">
+              مديونية سابقة
+            </span>
+          )}
         </h2>
         <span className="text-xs text-muted-foreground">
           المتبقي:{" "}
@@ -183,37 +226,39 @@ export function PaymentForm({ invoiceId, remainingAmount, invoiceItems = [] }: P
         </span>
       </div>
 
-      {/* Mode Tabs */}
-      <div className="grid grid-cols-2 gap-2 mb-5">
-        <button
-          type="button"
-          onClick={() => setMode("FLAT")}
-          className={cn(
-            "flex items-center justify-center gap-2 p-3 rounded-xl border text-sm font-medium transition-all",
-            mode === "FLAT"
-              ? "border-primary bg-primary/10 text-primary"
-              : "border-border text-muted-foreground hover:bg-muted"
-          )}
-        >
-          <DollarSign className="w-4 h-4" />
-          تسديد مبلغ
-        </button>
-        <button
-          type="button"
-          onClick={() => setMode("ITEMIZED")}
-          disabled={invoiceItems.length === 0}
-          className={cn(
-            "flex items-center justify-center gap-2 p-3 rounded-xl border text-sm font-medium transition-all",
-            mode === "ITEMIZED"
-              ? "border-primary bg-primary/10 text-primary"
-              : "border-border text-muted-foreground hover:bg-muted",
-            invoiceItems.length === 0 && "opacity-40 cursor-not-allowed"
-          )}
-        >
-          <Package className="w-4 h-4" />
-          تسديد كميات
-        </button>
-      </div>
+      {/* Mode Tabs — only for standard invoices */}
+      {!isLegacy && (
+        <div className="grid grid-cols-2 gap-2 mb-5">
+          <button
+            type="button"
+            onClick={() => setMode("FLAT")}
+            className={cn(
+              "flex items-center justify-center gap-2 p-3 rounded-xl border text-sm font-medium transition-all",
+              mode === "FLAT"
+                ? "border-primary bg-primary/10 text-primary"
+                : "border-border text-muted-foreground hover:bg-muted"
+            )}
+          >
+            <DollarSign className="w-4 h-4" />
+            تسديد مبلغ
+          </button>
+          <button
+            type="button"
+            onClick={() => setMode("ITEMIZED")}
+            disabled={invoiceItems.length === 0}
+            className={cn(
+              "flex items-center justify-center gap-2 p-3 rounded-xl border text-sm font-medium transition-all",
+              mode === "ITEMIZED"
+                ? "border-primary bg-primary/10 text-primary"
+                : "border-border text-muted-foreground hover:bg-muted",
+              invoiceItems.length === 0 && "opacity-40 cursor-not-allowed"
+            )}
+          >
+            <Package className="w-4 h-4" />
+            تسديد كميات
+          </button>
+        </div>
+      )}
 
       {/* Success message */}
       {successMsg && (
@@ -269,6 +314,162 @@ export function PaymentForm({ invoiceId, remainingAmount, invoiceItems = [] }: P
             <label className="text-sm font-medium">ملاحظات (اختياري)</label>
             <input {...flatForm.register("notes")} placeholder="ملاحظات..." className={inputClass} />
           </div>
+
+          {/* LEGACY DEBT: Target items selection for Sales Rep */}
+          {isLegacy && (
+            <div className="p-4 rounded-xl border border-amber-200 dark:border-amber-900/40 bg-amber-50/50 dark:bg-amber-900/10 space-y-3">
+              <div className="flex items-center justify-between">
+                <label className="flex items-center gap-2 cursor-pointer select-none">
+                  <input
+                    type="checkbox"
+                    checked={includeTargetItems}
+                    onChange={(e) => {
+                      setIncludeTargetItems(e.target.checked);
+                      if (e.target.checked && targetItems.length === 0 && allProducts.length > 0) {
+                        setTargetItems([
+                          {
+                            productId: allProducts[0].id,
+                            quantity: 1,
+                            price: Number(allProducts[0].price) || 0,
+                          },
+                        ]);
+                      }
+                    }}
+                    className="w-4 h-4 rounded border-amber-300 text-amber-600 focus:ring-amber-500"
+                  />
+                  <span className="text-xs font-bold text-amber-900 dark:text-amber-300">
+                    🎯 احتساب أصناف لمستهدف المندوب (اختياري - بدون مساس بالمخزون)
+                  </span>
+                </label>
+                {includeTargetItems && (
+                  <button
+                    type="button"
+                    onClick={() => {
+                      if (allProducts.length > 0) {
+                        setTargetItems([
+                          ...targetItems,
+                          {
+                            productId: allProducts[0].id,
+                            quantity: 1,
+                            price: Number(allProducts[0].price) || 0,
+                          },
+                        ]);
+                      }
+                    }}
+                    className="text-xs text-amber-700 dark:text-amber-400 font-semibold hover:underline flex items-center gap-1"
+                  >
+                    + إضافة صنف
+                  </button>
+                )}
+              </div>
+
+              {includeTargetItems && (
+                <div className="space-y-2 mt-2">
+                  <p className="text-[11px] text-amber-700/80 dark:text-amber-500/80">
+                    هذه الأصناف تُستخدم حصرياً لحساب نسبة تحقيق مستهدف المندوب الشهري لهذا السداد ولا تؤثر إطلاقاً على المخزون.
+                  </p>
+                  {targetItems.map((ti, idx) => (
+                    <div
+                      key={idx}
+                      className="grid grid-cols-12 gap-2 items-center bg-card p-2.5 rounded-lg border border-amber-200/60 dark:border-amber-900/30 text-xs"
+                    >
+                      <div className="col-span-5">
+                        <label className="text-[10px] text-muted-foreground block mb-0.5">المنتج</label>
+                        <select
+                          value={ti.productId}
+                          onChange={(e) => {
+                            const selProd = allProducts.find((p) => p.id === e.target.value);
+                            const updated = [...targetItems];
+                            updated[idx] = {
+                              ...updated[idx],
+                              productId: e.target.value,
+                              price: Number(selProd?.price) || updated[idx].price,
+                            };
+                            setTargetItems(updated);
+                          }}
+                          className="w-full p-1.5 rounded-md border text-xs bg-background"
+                        >
+                          {allProducts.map((p) => (
+                            <option key={p.id} value={p.id}>
+                              {p.name}
+                            </option>
+                          ))}
+                        </select>
+                      </div>
+                      <div className="col-span-3">
+                        <label className="text-[10px] text-muted-foreground block mb-0.5">الكمية</label>
+                        <input
+                          type="number"
+                          min={1}
+                          value={ti.quantity}
+                          onChange={(e) => {
+                            const val = parseFloat(e.target.value) || 0;
+                            const updated = [...targetItems];
+                            updated[idx] = { ...updated[idx], quantity: val };
+                            setTargetItems(updated);
+                          }}
+                          className="w-full p-1.5 rounded-md border text-xs text-center bg-background"
+                        />
+                      </div>
+                      <div className="col-span-3">
+                        <label className="text-[10px] text-muted-foreground block mb-0.5">السعر (ج.م)</label>
+                        <input
+                          type="number"
+                          min={0}
+                          step="0.01"
+                          value={ti.price}
+                          onChange={(e) => {
+                            const val = parseFloat(e.target.value) || 0;
+                            const updated = [...targetItems];
+                            updated[idx] = { ...updated[idx], price: val };
+                            setTargetItems(updated);
+                          }}
+                          className="w-full p-1.5 rounded-md border text-xs text-center bg-background"
+                        />
+                      </div>
+                      <div className="col-span-1 flex justify-center pt-3">
+                        <button
+                          type="button"
+                          onClick={() => setTargetItems(targetItems.filter((_, i) => i !== idx))}
+                          className="text-red-500 hover:text-red-700 text-sm font-bold"
+                          title="حذف"
+                        >
+                          ✕
+                        </button>
+                      </div>
+                    </div>
+                  ))}
+                  {targetItems.length > 0 && (
+                    <div className="flex items-center justify-between pt-1 text-xs text-amber-800 dark:text-amber-400 font-medium">
+                      <span>
+                        إجمالي قيمة الأصناف:{" "}
+                        <span className="font-bold">
+                          {formatCurrency(
+                            targetItems
+                              .reduce((sum, i) => sum + (i.quantity || 0) * (i.price || 0), 0)
+                              .toString()
+                          )}
+                        </span>
+                      </span>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          const totalVal = targetItems.reduce(
+                            (sum, i) => sum + (i.quantity || 0) * (i.price || 0),
+                            0
+                          );
+                          flatForm.setValue("amount", Math.min(totalVal, remainingAmount));
+                        }}
+                        className="text-[11px] underline text-primary hover:text-primary/80"
+                      >
+                        مزامنة مع مبلغ السداد
+                      </button>
+                    </div>
+                  )}
+                </div>
+              )}
+            </div>
+          )}
 
           {serverError && (
             <div className="p-3 rounded-lg bg-red-50 text-red-700 text-xs dark:bg-red-900/10 dark:text-red-400">

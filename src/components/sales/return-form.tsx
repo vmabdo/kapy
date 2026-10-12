@@ -9,33 +9,57 @@ import { z } from "zod";
 import { formatCurrency } from "@/lib/utils";
 import { createPortal } from "react-dom";
 import { toast } from "sonner";
+import { useRouter } from "next/navigation";
 
 const ReturnItemSchema = z.object({
-  productId: z.string().min(1),
+  productId: z.string().min(1, "اختر المنتج"),
   quantity: z.coerce.number().positive("الكمية يجب أن تكون أكبر من 0"),
+});
+
+const LegacyReturnItemSchema = z.object({
+  productId: z.string().min(1, "اختر المنتج"),
+  quantity: z.coerce.number().positive("الكمية يجب أن تكون أكبر من 0"),
+  unitPrice: z.coerce.number().positive("سعر الوحدة يجب أن يكون أكبر من 0"),
 });
 
 export const ProcessReturnSchema = z.object({
   invoiceId: z.string().min(1),
   reason: z.string().optional(),
   notes: z.string().optional(),
-  items: z.array(ReturnItemSchema).min(1, "أضف منتجاً واحداً على الأقل"),
+  items: z.array(ReturnItemSchema).optional().default([]),
+  legacyItems: z.array(LegacyReturnItemSchema).optional().default([]),
 });
 
 type ReturnFormData = z.input<typeof ProcessReturnSchema>;
 
+export interface ProductOption {
+  id: string;
+  name: string;
+  sku?: string;
+  unit?: string;
+  price?: number;
+}
+
 interface Props {
   invoiceId: string;
-  invoiceItems: {
+  invoiceItems?: {
     id: string;
     productId: string;
     productName: string;
     quantity: number;
     unitPrice: number;
   }[];
+  isLegacy?: boolean;
+  allProducts?: ProductOption[];
 }
 
-export function ReturnForm({ invoiceId, invoiceItems }: Props) {
+export function ReturnForm({
+  invoiceId,
+  invoiceItems = [],
+  isLegacy = false,
+  allProducts = [],
+}: Props) {
+  const router = useRouter();
   const [isOpen, setIsOpen] = useState(false);
   const [serverError, setServerError] = useState<string | null>(null);
 
@@ -46,207 +70,385 @@ export function ReturnForm({ invoiceId, invoiceItems }: Props) {
       reason: "",
       notes: "",
       items: [],
+      legacyItems: [],
     },
   });
 
-  const { fields, append, remove } = useFieldArray({
+  const {
+    fields: standardFields,
+    append: appendStandard,
+    remove: removeStandard,
+  } = useFieldArray({
     control: form.control,
     name: "items",
   });
 
+  const {
+    fields: legacyFields,
+    append: appendLegacy,
+    remove: removeLegacy,
+  } = useFieldArray({
+    control: form.control,
+    name: "legacyItems",
+  });
+
+  const watchLegacyItems = form.watch("legacyItems") || [];
+  const legacyTotalReturn = watchLegacyItems.reduce(
+    (sum, item) => sum + (Number(item?.quantity) || 0) * (Number(item?.unitPrice) || 0),
+    0
+  );
+
   const onSubmit = async (data: ReturnFormData) => {
     setServerError(null);
-    const result = await processInvoiceReturn(data as any);
+    if (isLegacy) {
+      if (!data.legacyItems || data.legacyItems.length === 0) {
+        setServerError("أضف منتجاً واحداً على الأقل للارتجاع");
+        return;
+      }
+    } else {
+      if (!data.items || data.items.length === 0) {
+        setServerError("أضف منتجاً واحداً على الأقل للارتجاع");
+        return;
+      }
+    }
+
+    const result = await processInvoiceReturn({
+      invoiceId: data.invoiceId,
+      reason: data.reason,
+      notes: data.notes,
+      items: (!isLegacy && data.items ? data.items : []),
+      legacyItems: (isLegacy && data.legacyItems ? data.legacyItems : []),
+    });
+
     if (result.success) {
       toast.success("تم تسجيل المرتجع بنجاح");
       setIsOpen(false);
       form.reset();
+      router.refresh();
     } else {
       toast.error("حدث خطأ", { description: result.error || "حدث خطأ غير متوقع" });
       setServerError(result.error || "حدث خطأ غير متوقع");
     }
   };
 
-  const availableItems = invoiceItems.filter(
-    (item) => !fields.find((field) => field.productId === item.productId)
+  const availableStandardItems = invoiceItems.filter(
+    (item) => !standardFields.find((field) => field.productId === item.productId)
   );
 
   return (
     <>
       <button
         onClick={() => setIsOpen(true)}
-        className="w-full flex items-center justify-center gap-2 px-4 py-2 bg-red-600 text-white rounded-xl font-medium hover:bg-red-700 transition-colors"
+        className="w-full flex items-center justify-center gap-2 px-4 py-2.5 bg-red-600 text-white rounded-xl font-medium hover:bg-red-700 transition-colors text-sm"
       >
         <Undo2 className="w-4 h-4" />
-        إضافة مرتجع للفاتورة
+        {isLegacy ? "إضافة مرتجع لمديونية سابقة" : "إضافة مرتجع للفاتورة"}
       </button>
 
-      {isOpen && createPortal(
-        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/50" dir="rtl">
-          <div className="bg-card w-[95vw] max-w-2xl max-h-[90vh] overflow-y-auto rounded-2xl shadow-xl border border-border">
-            
-            <div className="flex justify-between items-center p-5 border-b border-border">
-              <div>
-                <h2 className="font-semibold text-lg">تسجيل مرتجع مبيعات</h2>
-                <p className="text-xs text-muted-foreground mt-1">
-                  حدد المنتجات والكميات المرتجعة. سيتم استرجاع المنتجات إلى رصيد المخزن الرئيسي وخصم قيمتها من الفاتورة.
-                </p>
-              </div>
-              <button onClick={() => setIsOpen(false)} className="p-2 hover:bg-muted rounded-full">
-                <X className="w-5 h-5 text-muted-foreground" />
-              </button>
-            </div>
-
-            <div className="p-5">
-              {serverError && (
-                <div className="mb-4 p-3 bg-red-50 text-red-600 text-sm rounded-lg border border-red-200">
-                  {serverError}
-                </div>
-              )}
-
-              <form onSubmit={form.handleSubmit(onSubmit)} className="space-y-6">
-                
-                <div className="space-y-4">
-                  <div className="flex items-center justify-between">
-                    <h3 className="text-sm font-semibold">المنتجات المرتجعة</h3>
-                    {availableItems.length > 0 && (
-                      <button
-                        type="button"
-                        className="flex items-center gap-1.5 px-3 py-1.5 border border-border rounded-lg text-xs hover:bg-muted"
-                        onClick={() => {
-                          if (availableItems[0]) {
-                            append({ productId: availableItems[0].productId, quantity: 1 });
-                          }
-                        }}
-                      >
-                        <Plus className="w-3 h-3" />
-                        إضافة منتج للارتجاع
-                      </button>
+      {isOpen &&
+        createPortal(
+          <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/50" dir="rtl">
+            <div className="bg-card w-[95vw] max-w-2xl max-h-[90vh] overflow-y-auto rounded-2xl shadow-xl border border-border">
+              <div className="flex justify-between items-center p-5 border-b border-border">
+                <div>
+                  <h2 className="font-semibold text-lg flex items-center gap-2">
+                    {isLegacy ? "تسجيل مرتجع لمديونية سابقة" : "تسجيل مرتجع مبيعات"}
+                    {isLegacy && (
+                      <span className="text-xs bg-amber-100 dark:bg-amber-900/30 text-amber-700 dark:text-amber-400 px-2 py-0.5 rounded-full font-medium">
+                        مديونية سابقة
+                      </span>
                     )}
+                  </h2>
+                  <p className="text-xs text-muted-foreground mt-1">
+                    {isLegacy
+                      ? "حدد المنتجات والكميات المرتجعة وأسعارها. سيتم إدخال البضاعة لمخزن المحافظة وخصم إجمالي قيمتها من رصيد المديونية المستحقة."
+                      : "حدد المنتجات والكميات المرتجعة. سيتم استرجاع المنتجات إلى رصيد المخزن وخصم قيمتها من الفاتورة."}
+                  </p>
+                </div>
+                <button onClick={() => setIsOpen(false)} className="p-2 hover:bg-muted rounded-full">
+                  <X className="w-5 h-5 text-muted-foreground" />
+                </button>
+              </div>
+
+              <div className="p-5">
+                {serverError && (
+                  <div className="mb-4 p-3 bg-red-50 text-red-600 text-sm rounded-lg border border-red-200">
+                    {serverError}
                   </div>
+                )}
 
-                  {fields.length === 0 && (
-                    <div className="text-center p-6 bg-muted/30 rounded-xl border border-border border-dashed">
-                      <p className="text-sm text-muted-foreground">لم يتم اختيار أي منتجات للارتجاع</p>
-                    </div>
-                  )}
-                  {form.formState.errors.items && fields.length === 0 && (
-                     <p className="text-xs text-red-500 mt-1">{form.formState.errors.items.message}</p>
-                  )}
+                <form onSubmit={form.handleSubmit(onSubmit)} className="space-y-6">
+                  {/* ─── LEGACY RETURN FORM ──────────────────────────────── */}
+                  {isLegacy ? (
+                    <div className="space-y-4">
+                      <div className="flex items-center justify-between">
+                        <h3 className="text-sm font-semibold">الأصناف المرتجعة (من الكتالوج)</h3>
+                        <button
+                          type="button"
+                          className="flex items-center gap-1.5 px-3 py-1.5 border border-border rounded-lg text-xs hover:bg-muted font-medium"
+                          onClick={() => {
+                            if (allProducts.length > 0) {
+                              appendLegacy({
+                                productId: allProducts[0].id,
+                                quantity: 1,
+                                unitPrice: Number(allProducts[0].price) || 0,
+                              });
+                            }
+                          }}
+                        >
+                          <Plus className="w-3 h-3" />
+                          إضافة صنف للارتجاع
+                        </button>
+                      </div>
 
-                  {fields.map((field, index) => {
-                    const selectedProductId = form.watch(`items.${index}.productId`);
-                    const originalItem = invoiceItems.find((i) => i.productId === selectedProductId);
-                    const maxQuantity = originalItem?.quantity || 1;
-                    
-                    const prodError = form.formState.errors.items?.[index]?.productId?.message;
-                    const qtyError = form.formState.errors.items?.[index]?.quantity?.message;
-
-                    return (
-                      <div key={field.id} className="grid grid-cols-12 gap-3 items-end bg-muted/20 p-3 rounded-lg border border-border/50">
-                        <div className="col-span-12 sm:col-span-6 space-y-1">
-                          <label className="text-xs font-medium">المنتج</label>
-                          <select
-                            className="flex h-9 w-full rounded-md border border-input bg-transparent px-3 py-1 text-sm focus:outline-none focus:ring-1 focus:ring-primary/50"
-                            {...form.register(`items.${index}.productId`)}
-                          >
-                            <option value="">اختر المنتج</option>
-                            {invoiceItems.map((item) => (
-                              <option 
-                                key={item.productId} 
-                                value={item.productId}
-                                disabled={
-                                  item.productId !== selectedProductId && 
-                                  fields.some(f => f.productId === item.productId)
-                                }
-                              >
-                                {item.productName} (السعر: {formatCurrency(item.unitPrice.toString())})
-                              </option>
-                            ))}
-                          </select>
-                          {prodError && <p className="text-[10px] text-red-500">{prodError}</p>}
-                        </div>
-                        
-                        <div className="col-span-9 sm:col-span-4 space-y-1">
-                          <div className="flex justify-between">
-                            <label className="text-xs font-medium">الكمية المرتجعة</label>
-                            <span className="text-[10px] text-muted-foreground">أقصى حد: {maxQuantity}</span>
-                          </div>
-                          <input 
-                            type="number" 
-                            min={0.001} 
-                            max={maxQuantity}
-                            step="any"
-                            className="flex h-9 w-full rounded-md border border-input bg-transparent px-3 py-1 text-sm focus:outline-none focus:ring-1 focus:ring-primary/50"
-                            {...form.register(`items.${index}.quantity`)}
-                          />
-                          {qtyError && <p className="text-[10px] text-red-500">{qtyError}</p>}
-                        </div>
-                        
-                        <div className="col-span-3 sm:col-span-2">
+                      {legacyFields.length === 0 && (
+                        <div className="text-center p-6 bg-muted/30 rounded-xl border border-border border-dashed">
+                          <p className="text-sm text-muted-foreground">لم يتم اختيار أي منتجات للارتجاع بعد</p>
                           <button
                             type="button"
-                            className="h-9 w-full flex justify-center items-center rounded-lg text-red-500 hover:bg-red-50"
-                            onClick={() => remove(index)}
+                            onClick={() => {
+                              if (allProducts.length > 0) {
+                                appendLegacy({
+                                  productId: allProducts[0].id,
+                                  quantity: 1,
+                                  unitPrice: Number(allProducts[0].price) || 0,
+                                });
+                              }
+                            }}
+                            className="mt-2 text-xs text-primary font-semibold hover:underline"
                           >
-                            <Trash2 className="w-4 h-4" />
+                            + انقر لإضافة أول صنف
                           </button>
                         </div>
+                      )}
+
+                      {legacyFields.map((field, index) => {
+                        const lineQty = Number(watchLegacyItems[index]?.quantity) || 0;
+                        const linePrice = Number(watchLegacyItems[index]?.unitPrice) || 0;
+                        const lineTotal = lineQty * linePrice;
+
+                        return (
+                          <div
+                            key={field.id}
+                            className="grid grid-cols-12 gap-3 items-end bg-muted/20 p-3 rounded-lg border border-border/50"
+                          >
+                            {/* Product */}
+                            <div className="col-span-12 sm:col-span-5 space-y-1">
+                              <label className="text-xs font-medium">المنتج</label>
+                              <select
+                                className="flex h-9 w-full rounded-md border border-input bg-transparent px-3 py-1 text-sm focus:outline-none focus:ring-1 focus:ring-primary/50"
+                                {...form.register(`legacyItems.${index}.productId`)}
+                                onChange={(e) => {
+                                  form.register(`legacyItems.${index}.productId`).onChange(e);
+                                  const sel = allProducts.find((p) => p.id === e.target.value);
+                                  if (sel?.price) {
+                                    form.setValue(`legacyItems.${index}.unitPrice`, Number(sel.price));
+                                  }
+                                }}
+                              >
+                                {allProducts.map((p) => (
+                                  <option key={p.id} value={p.id}>
+                                    {p.name}
+                                  </option>
+                                ))}
+                              </select>
+                            </div>
+
+                            {/* Quantity */}
+                            <div className="col-span-4 sm:col-span-3 space-y-1">
+                              <label className="text-xs font-medium">الكمية</label>
+                              <input
+                                type="number"
+                                min={0.001}
+                                step="any"
+                                className="flex h-9 w-full rounded-md border border-input bg-transparent px-3 py-1 text-sm text-center focus:outline-none focus:ring-1 focus:ring-primary/50"
+                                {...form.register(`legacyItems.${index}.quantity`, { valueAsNumber: true })}
+                              />
+                            </div>
+
+                            {/* Unit Price */}
+                            <div className="col-span-5 sm:col-span-3 space-y-1">
+                              <label className="text-xs font-medium">السعر (ج.م)</label>
+                              <input
+                                type="number"
+                                min={0.01}
+                                step="0.01"
+                                className="flex h-9 w-full rounded-md border border-input bg-transparent px-3 py-1 text-sm text-center focus:outline-none focus:ring-1 focus:ring-primary/50"
+                                {...form.register(`legacyItems.${index}.unitPrice`, { valueAsNumber: true })}
+                              />
+                            </div>
+
+                            {/* Remove button */}
+                            <div className="col-span-3 sm:col-span-1 flex justify-center pb-0.5">
+                              <button
+                                type="button"
+                                className="h-9 w-9 flex justify-center items-center rounded-lg text-red-500 hover:bg-red-50"
+                                onClick={() => removeLegacy(index)}
+                                title="حذف"
+                              >
+                                <Trash2 className="w-4 h-4" />
+                              </button>
+                            </div>
+
+                            {lineTotal > 0 && (
+                              <div className="col-span-12 text-left text-xs text-muted-foreground pt-1">
+                                إجمالي الصنف: <span className="font-bold text-foreground">{formatCurrency(lineTotal.toString())}</span>
+                              </div>
+                            )}
+                          </div>
+                        );
+                      })}
+
+                      {legacyFields.length > 0 && (
+                        <div className="p-3 bg-amber-50 dark:bg-amber-900/10 rounded-xl border border-amber-200 dark:border-amber-900/40 flex justify-between items-center text-sm">
+                          <span className="font-semibold text-amber-900 dark:text-amber-300">
+                            إجمالي قيمة المرتجع المخصوم من الدين:
+                          </span>
+                          <span className="text-base font-bold text-red-600">
+                            - {formatCurrency(legacyTotalReturn.toString())}
+                          </span>
+                        </div>
+                      )}
+                    </div>
+                  ) : (
+                    /* ─── STANDARD RETURN FORM ────────────────────────────── */
+                    <div className="space-y-4">
+                      <div className="flex items-center justify-between">
+                        <h3 className="text-sm font-semibold">المنتجات المرتجعة</h3>
+                        {availableStandardItems.length > 0 && (
+                          <button
+                            type="button"
+                            className="flex items-center gap-1.5 px-3 py-1.5 border border-border rounded-lg text-xs hover:bg-muted"
+                            onClick={() => {
+                              if (availableStandardItems[0]) {
+                                appendStandard({ productId: availableStandardItems[0].productId, quantity: 1 });
+                              }
+                            }}
+                          >
+                            <Plus className="w-3 h-3" />
+                            إضافة منتج للارتجاع
+                          </button>
+                        )}
                       </div>
-                    );
-                  })}
-                </div>
 
-                <div className="grid grid-cols-1 gap-4">
-                  <div className="space-y-1">
-                    <label className="text-sm font-medium">سبب الارتجاع (اختياري)</label>
-                    <input 
-                      type="text" 
-                      placeholder="مثال: منتج تالف، خطأ في الطلبية..."
-                      className="flex h-10 w-full rounded-md border border-input bg-transparent px-3 py-1 text-sm focus:outline-none focus:ring-1 focus:ring-primary/50"
-                      {...form.register("reason")}
-                    />
+                      {standardFields.length === 0 && (
+                        <div className="text-center p-6 bg-muted/30 rounded-xl border border-border border-dashed">
+                          <p className="text-sm text-muted-foreground">لم يتم اختيار أي منتجات للارتجاع</p>
+                        </div>
+                      )}
+
+                      {standardFields.map((field, index) => {
+                        const selectedProductId = form.watch(`items.${index}.productId`);
+                        const originalItem = invoiceItems.find((i) => i.productId === selectedProductId);
+                        const maxQuantity = originalItem?.quantity || 1;
+
+                        return (
+                          <div
+                            key={field.id}
+                            className="grid grid-cols-12 gap-3 items-end bg-muted/20 p-3 rounded-lg border border-border/50"
+                          >
+                            <div className="col-span-12 sm:col-span-6 space-y-1">
+                              <label className="text-xs font-medium">المنتج</label>
+                              <select
+                                className="flex h-9 w-full rounded-md border border-input bg-transparent px-3 py-1 text-sm focus:outline-none focus:ring-1 focus:ring-primary/50"
+                                {...form.register(`items.${index}.productId`)}
+                              >
+                                <option value="">اختر المنتج</option>
+                                {invoiceItems.map((item) => (
+                                  <option
+                                    key={item.productId}
+                                    value={item.productId}
+                                    disabled={
+                                      item.productId !== selectedProductId &&
+                                      standardFields.some((f) => f.productId === item.productId)
+                                    }
+                                  >
+                                    {item.productName} (السعر: {formatCurrency(item.unitPrice.toString())})
+                                  </option>
+                                ))}
+                              </select>
+                            </div>
+
+                            <div className="col-span-9 sm:col-span-4 space-y-1">
+                              <div className="flex justify-between">
+                                <label className="text-xs font-medium">الكمية المرتجعة</label>
+                                <span className="text-[10px] text-muted-foreground">أقصى حد: {maxQuantity}</span>
+                              </div>
+                              <input
+                                type="number"
+                                min={0.001}
+                                max={maxQuantity}
+                                step="any"
+                                className="flex h-9 w-full rounded-md border border-input bg-transparent px-3 py-1 text-sm focus:outline-none focus:ring-1 focus:ring-primary/50"
+                                {...form.register(`items.${index}.quantity`)}
+                              />
+                            </div>
+
+                            <div className="col-span-3 sm:col-span-2">
+                              <button
+                                type="button"
+                                className="h-9 w-full flex justify-center items-center rounded-lg text-red-500 hover:bg-red-50"
+                                onClick={() => removeStandard(index)}
+                              >
+                                <Trash2 className="w-4 h-4" />
+                              </button>
+                            </div>
+                          </div>
+                        );
+                      })}
+                    </div>
+                  )}
+
+                  {/* ─── Reason and Notes ────────────────────────────── */}
+                  <div className="grid grid-cols-1 gap-4">
+                    <div className="space-y-1">
+                      <label className="text-sm font-medium">سبب الارتجاع (اختياري)</label>
+                      <input
+                        type="text"
+                        placeholder="مثال: تسوية رصيد سابق، منتج مسترجع..."
+                        className="flex h-10 w-full rounded-md border border-input bg-transparent px-3 py-1 text-sm focus:outline-none focus:ring-1 focus:ring-primary/50"
+                        {...form.register("reason")}
+                      />
+                    </div>
+
+                    <div className="space-y-1">
+                      <label className="text-sm font-medium">ملاحظات إضافية (اختياري)</label>
+                      <textarea
+                        placeholder="أي ملاحظات أخرى حول المرتجع..."
+                        className="flex min-h-[80px] w-full rounded-md border border-input bg-transparent px-3 py-2 text-sm focus:outline-none focus:ring-1 focus:ring-primary/50"
+                        {...form.register("notes")}
+                      />
+                    </div>
                   </div>
 
-                  <div className="space-y-1">
-                    <label className="text-sm font-medium">ملاحظات إضافية (اختياري)</label>
-                    <textarea 
-                      placeholder="أي ملاحظات أخرى حول المرتجع..." 
-                      className="flex min-h-[80px] w-full rounded-md border border-input bg-transparent px-3 py-2 text-sm focus:outline-none focus:ring-1 focus:ring-primary/50"
-                      {...form.register("notes")}
-                    />
+                  <div className="flex justify-end gap-3 pt-4 border-t border-border">
+                    <button
+                      type="button"
+                      onClick={() => setIsOpen(false)}
+                      className="px-4 py-2 rounded-xl text-sm font-medium border border-border hover:bg-muted"
+                    >
+                      إلغاء
+                    </button>
+                    <button
+                      type="submit"
+                      disabled={form.formState.isSubmitting}
+                      className="px-4 py-2 rounded-xl flex items-center justify-center gap-2 text-sm font-medium bg-red-600 text-white hover:bg-red-700 disabled:opacity-50"
+                    >
+                      {form.formState.isSubmitting ? (
+                        <>
+                          <Undo2 className="w-4 h-4 animate-spin" /> جاري الحفظ...
+                        </>
+                      ) : (
+                        "تأكيد المرتجع"
+                      )}
+                    </button>
                   </div>
-                </div>
-
-                <div className="flex justify-end gap-3 pt-4 border-t border-border">
-                  <button 
-                    type="button" 
-                    onClick={() => setIsOpen(false)}
-                    className="px-4 py-2 rounded-xl text-sm font-medium border border-border hover:bg-muted"
-                  >
-                    إلغاء
-                  </button>
-                  <button 
-                    type="submit" 
-                    disabled={form.formState.isSubmitting}
-                    className="px-4 py-2 rounded-xl flex items-center justify-center gap-2 text-sm font-medium bg-red-600 text-white hover:bg-red-700 disabled:opacity-50"
-                  >
-                    {form.formState.isSubmitting ? (
-                      <>
-                        <Undo2 className="w-4 h-4 animate-spin" /> جاري الحفظ...
-                      </>
-                    ) : (
-                      "تأكيد المرتجع"
-                    )}
-                  </button>
-                </div>
-              </form>
+                </form>
+              </div>
             </div>
-
-          </div>
-        </div>,
-        document.body
-      )}
+          </div>,
+          document.body
+        )}
     </>
   );
 }

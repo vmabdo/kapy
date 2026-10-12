@@ -13,10 +13,10 @@ import { getSystemSettings } from "@/queries/settings";
 // ─── Schemas ──────────────────────────────────────────────────
 
 const InvoiceItemSchema = z.object({
-  productId: z.string().min(1),
-  quantity: z.coerce.number().positive("الكمية يجب أن تكون أكبر من 0"),
+  productId: z.string().optional().default(""),
+  quantity: z.coerce.number().optional().default(1),
   bonusQuantity: z.coerce.number().min(0).optional().default(0), // free boxes — stock deducted but not billed
-  unitPrice: z.coerce.number().min(0, "السعر يجب أن يكون صحيحاً").optional().default(0),
+  unitPrice: z.coerce.number().min(0).optional().default(0),
 });
 
 // Upfront itemized payment item (for CREDIT invoices)
@@ -27,21 +27,60 @@ const UpfrontPaymentItemSchema = z.object({
   unitPrice: z.coerce.number().min(0).optional().default(0),
 });
 
-const CreateInvoiceSchema = z.object({
-  pharmacyId: z.string().min(1, "اختر العميل"),
-  salesRepId: z.string().min(1, "اختر المندوب"),
-  type: z.nativeEnum(InvoiceType),
-  notes: z.string().optional(),
-  manualNumber: z.string().min(1, "رقم الفاتورة مطلوب"),
-  discountType: z.nativeEnum(DiscountType).default(DiscountType.PERCENTAGE),
-  discountValue: z.coerce.number().min(0).optional().default(0),
-  paidAmount: z.coerce.number().min(0).optional().default(0),
-  isLegacy: z.boolean().optional().default(false),
-  issueDate: z.coerce.date().optional(),
-  // Upfront itemized payment (only for CREDIT invoices — by product quantity)
-  upfrontPaymentItems: z.array(UpfrontPaymentItemSchema).optional().default([]),
-  items: z.array(InvoiceItemSchema).min(1, "أضف منتجاً واحداً على الأقل"),
-});
+const CreateInvoiceSchema = z
+  .object({
+    pharmacyId: z.string().min(1, "اختر العميل"),
+    salesRepId: z.string().min(1, "اختر المندوب"),
+    type: z.nativeEnum(InvoiceType),
+    notes: z.string().optional(),
+    manualNumber: z.string().min(1, "رقم الفاتورة مطلوب"),
+    discountType: z.nativeEnum(DiscountType).default(DiscountType.PERCENTAGE),
+    discountValue: z.coerce.number().min(0).optional().default(0),
+    paidAmount: z.coerce.number().min(0).optional().default(0),
+    isLegacy: z.boolean().optional().default(false),
+    /// LEGACY DEBT: total debt amount when isLegacy is true
+    legacyDebtAmount: z.coerce.number().min(0).optional().default(0),
+    issueDate: z.coerce.date().optional(),
+    // Upfront itemized payment (only for CREDIT invoices — by product quantity)
+    upfrontPaymentItems: z.array(UpfrontPaymentItemSchema).optional().default([]),
+    items: z.array(InvoiceItemSchema).optional().default([]),
+  })
+  .superRefine((data, ctx) => {
+    if (data.isLegacy) {
+      if ((data.legacyDebtAmount ?? 0) <= 0) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: ["legacyDebtAmount"],
+          message: "قيمة المديونية يجب أن تكون أكبر من 0",
+        });
+      }
+    } else {
+      if (!data.items || data.items.length === 0) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: ["items"],
+          message: "أضف منتجاً واحداً على الأقل",
+        });
+      } else {
+        data.items.forEach((item, index) => {
+          if (!item.productId || item.productId.trim() === "") {
+            ctx.addIssue({
+              code: z.ZodIssueCode.custom,
+              path: ["items", index, "productId"],
+              message: "اختر منتجاً",
+            });
+          }
+          if (!item.quantity || Number(item.quantity) <= 0) {
+            ctx.addIssue({
+              code: z.ZodIssueCode.custom,
+              path: ["items", index, "quantity"],
+              message: "الكمية يجب أن تكون أكبر من 0",
+            });
+          }
+        });
+      }
+    }
+  });
 
 const RecordPaymentSchema = z.object({
   invoiceId: z.string().min(1),
@@ -57,6 +96,16 @@ const RecordPaymentSchema = z.object({
         invoiceItemId: z.string().min(1),
         paidQuantity: z.coerce.number().min(0),
         unitPrice: z.coerce.number().min(0),
+      })
+    )
+    .optional(),
+  // LEGACY DEBT: Dummy target items for rep target tracking (no stock touched)
+  targetItems: z
+    .array(
+      z.object({
+        productId: z.string().min(1),
+        quantity: z.coerce.number().positive(),
+        price: z.coerce.number().min(0),
       })
     )
     .optional(),
@@ -95,6 +144,23 @@ export async function createInvoice(
 
     const data = CreateInvoiceSchema.parse(formData);
 
+    // If legacy, strictly force items to []
+    if (data.isLegacy) {
+      data.items = [];
+      data.upfrontPaymentItems = [];
+    }
+
+    // ── LEGACY vs STANDARD validation ──
+    if (data.isLegacy) {
+      if ((data.legacyDebtAmount ?? 0) <= 0) {
+        return { success: false, error: "قيمة المديونية يجب أن تكون أكبر من 0" };
+      }
+    } else {
+      if (!data.items || data.items.length === 0) {
+        return { success: false, error: "أضف منتجاً واحداً على الأقل" };
+      }
+    }
+
     // Build invoice number: INV-YYYYMMDD-{manualNumber}
     const today = format(new Date(), "yyyyMMdd");
     const invoiceNumber = `INV-${today}-${data.manualNumber}`;
@@ -105,38 +171,40 @@ export async function createInvoice(
       return { success: false, error: `رقم الفاتورة "${invoiceNumber}" موجود بالفعل. اختر رقماً مختلفاً.` };
     }
 
-    // ── CRITICAL: Find SUB-warehouse in client's governorate ──
-    const pharmacy = await prisma.pharmacy.findUnique({
-      where: { id: data.pharmacyId },
-      select: { governorateId: true, name: true },
-    });
-    if (!pharmacy) {
-      return { success: false, error: "العميل غير موجود" };
-    }
+    // ── For LEGACY invoices: no warehouse required ──
+    let subWarehouse: { id: string; name: string } | null = null;
 
-    const subWarehouse = await prisma.warehouse.findFirst({
-      where: {
-        type: "SUB",
-        governorateId: pharmacy.governorateId,
-        isActive: true,
-      },
-    });
-
-    if (!subWarehouse) {
-      const governorate = await prisma.governorate.findUnique({
-        where: { id: pharmacy.governorateId },
-        select: { name: true },
-      });
-      return {
-        success: false,
-        error: `لا يوجد مخزن فرعي (SUB) في محافظة "${governorate?.name ?? pharmacy.governorateId}". يرجى إنشاء مخزن فرعي في نفس محافظة العميل أولاً.`,
-      };
-    }
-
-    // ── Validate warehouse stock availability ──
-    // Stock check must consider quantity + bonusQuantity (total physical boxes)
     if (!data.isLegacy) {
-      const productIds = data.items.map((i) => i.productId);
+      // ── CRITICAL: Find SUB-warehouse in client's governorate ──
+      const pharmacy = await prisma.pharmacy.findUnique({
+        where: { id: data.pharmacyId },
+        select: { governorateId: true, name: true },
+      });
+      if (!pharmacy) {
+        return { success: false, error: "العميل غير موجود" };
+      }
+
+      subWarehouse = await prisma.warehouse.findFirst({
+        where: {
+          type: "SUB",
+          governorateId: pharmacy.governorateId,
+          isActive: true,
+        },
+      });
+
+      if (!subWarehouse) {
+        const governorate = await prisma.governorate.findUnique({
+          where: { id: pharmacy.governorateId },
+          select: { name: true },
+        });
+        return {
+          success: false,
+          error: `لا يوجد مخزن فرعي (SUB) في محافظة "${governorate?.name ?? pharmacy.governorateId}". يرجى إنشاء مخزن فرعي في نفس محافظة العميل أولاً.`,
+        };
+      }
+
+      // ── Validate warehouse stock availability ──
+      const productIds = data.items.map((i) => i.productId as string);
       const stockItems = await prisma.stockItem.findMany({
         where: { warehouseId: subWarehouse.id, productId: { in: productIds } },
         include: { product: { select: { name: true } } },
@@ -144,8 +212,8 @@ export async function createInvoice(
       const stockItemMap = new Map(stockItems.map((si) => [si.productId, si]));
 
       for (const item of data.items) {
-        const totalRequired = item.quantity + (item.bonusQuantity ?? 0);
-        const stockItem = stockItemMap.get(item.productId);
+        const totalRequired = (item.quantity || 1) + (item.bonusQuantity ?? 0);
+        const stockItem = stockItemMap.get(item.productId as string);
         const available = Number(stockItem?.quantity ?? 0) - Number(stockItem?.reservedQty ?? 0);
         if (available < totalRequired) {
           return {
@@ -156,42 +224,67 @@ export async function createInvoice(
       }
     }
 
-    // Calculate subtotal — only billed quantity * price (bonus boxes are free)
-    const subtotal = data.items.reduce(
-      (sum, item) => sum + item.quantity * item.unitPrice,
-      0
-    );
+    // ── Calculate totals ──
+    // LEGACY: total is the raw debt amount, no items, no discount
+    let subtotal: number;
+    let discountAmount: number;
+    let totalAmount: number;
+    let itemsWithDiscountedPrice: Array<{
+      productId: string;
+      quantity: number;
+      bonusQuantity: number;
+      unitPrice: number;
+      discountedUnitPrice: number;
+    }> = [];
 
-    // Calculate discount amount
-    const discountAmount = calculateDiscountAmount(
-      subtotal,
-      data.discountType,
-      data.discountValue
-    );
+    if (data.isLegacy) {
+      subtotal = data.legacyDebtAmount ?? 0;
+      discountAmount = 0;
+      totalAmount = subtotal;
+      itemsWithDiscountedPrice = [];
+    } else {
+      // Calculate subtotal — only billed quantity * price (bonus boxes are free)
+      subtotal = data.items.reduce(
+        (sum, item) => sum + (item.quantity || 1) * (item.unitPrice || 0),
+        0
+      );
 
-    const totalAmount = calculateNetTotal(subtotal, discountAmount);
+      // Calculate discount amount
+      discountAmount = calculateDiscountAmount(
+        subtotal,
+        data.discountType,
+        data.discountValue
+      );
 
-    // ── CRITICAL: Compute proportional discount factor per item ──
-    // discountFactor = netTotal / grossSubtotal (1.0 means no discount)
-    const discountFactor = subtotal > 0 ? totalAmount / subtotal : 1;
+      totalAmount = calculateNetTotal(subtotal, discountAmount);
 
-    // Build items with discountedUnitPrice pre-calculated
-    const itemsWithDiscountedPrice = data.items.map((item) => ({
-      ...item,
-      discountedUnitPrice: item.unitPrice * discountFactor,
-    }));
+      // ── CRITICAL: Compute proportional discount factor per item ──
+      const discountFactor = subtotal > 0 ? totalAmount / subtotal : 1;
+
+      // Build items with discountedUnitPrice pre-calculated
+      itemsWithDiscountedPrice = data.items.map((item) => ({
+        productId: item.productId as string,
+        quantity: item.quantity || 1,
+        bonusQuantity: item.bonusQuantity ?? 0,
+        unitPrice: item.unitPrice || 0,
+        discountedUnitPrice: (item.unitPrice || 0) * discountFactor,
+      }));
+    }
 
     // Get settings for credit days
     const settings = await getSystemSettings();
     const creditDays = settings?.defaultCreditDays ?? 30;
 
+    // LEGACY invoices are always CREDIT (آجلة)
+    const effectiveType = data.isLegacy ? InvoiceType.CREDIT : data.type;
+
     let dueDate = null;
-    if (data.type === InvoiceType.CREDIT) {
+    if (effectiveType === InvoiceType.CREDIT) {
       dueDate = addDays(new Date(), creditDays);
     }
 
     // Determine initial payment state
-    const isCash = data.type === InvoiceType.CASH;
+    const isCash = effectiveType === InvoiceType.CASH;
 
     // Calculate upfront amount from itemized items (for CREDIT invoices)
     // Upfront uses discountedUnitPrice so the amount is accurate after discount
@@ -202,13 +295,14 @@ export async function createInvoice(
 
     if (isCash) {
       amountPaidNow = totalAmount;
-    } else if (activeUpfrontItems.length > 0) {
+    } else if (!data.isLegacy && activeUpfrontItems.length > 0) {
       // unitPrice in upfrontPaymentItems is already the discountedUnitPrice (set by client)
       amountPaidNow = activeUpfrontItems.reduce(
         (sum, pi) => sum + pi.paidQuantity * pi.unitPrice,
         0
       );
     }
+    // LEGACY invoices always start with 0 paid (full amount is deferred)
 
     amountPaidNow = Math.min(amountPaidNow, totalAmount);
     const remainingAmount = totalAmount - amountPaidNow;
@@ -229,7 +323,7 @@ export async function createInvoice(
           invoiceNumber,
           pharmacyId: data.pharmacyId,
           salesRepId: data.salesRepId,
-          type: data.type,
+          type: effectiveType,
           status: initialStatus,
           subtotal,
           discountType: data.discountType,
@@ -238,27 +332,31 @@ export async function createInvoice(
           total: totalAmount,
           paidAmount: amountPaidNow,
           remainingAmount,
-          creditDays: data.type === InvoiceType.CREDIT ? creditDays : null,
+          creditDays: effectiveType === InvoiceType.CREDIT ? creditDays : null,
           dueDate,
           notes: data.notes,
           isLegacy: data.isLegacy,
           invoiceDate: data.isLegacy && data.issueDate ? data.issueDate : undefined,
-          items: {
-            create: itemsWithDiscountedPrice.map((item) => ({
-              productId: item.productId,
-              quantity: item.quantity,
-              bonusQuantity: item.bonusQuantity ?? 0,
-              unitPrice: item.unitPrice,
-              discountedUnitPrice: item.discountedUnitPrice,
-              lineTotal: item.quantity * item.unitPrice,
-            })),
-          },
+          // LEGACY invoices have NO items — only a total debt amount
+          ...(itemsWithDiscountedPrice.length > 0 && {
+            items: {
+              create: itemsWithDiscountedPrice.map((item) => ({
+                productId: item.productId,
+                quantity: item.quantity,
+                bonusQuantity: item.bonusQuantity ?? 0,
+                unitPrice: item.unitPrice,
+                discountedUnitPrice: (item as any).discountedUnitPrice ?? 0,
+                lineTotal: item.quantity * item.unitPrice,
+              })),
+            },
+          }),
         },
       });
 
       // 2. Deduct stock from the sub-warehouse of the client's governorate
       // IMPORTANT: Total physical deduction = quantity + bonusQuantity
-      if (!data.isLegacy) {
+      // LEGACY invoices NEVER deduct stock
+      if (!data.isLegacy && subWarehouse) {
         for (const item of itemsWithDiscountedPrice) {
           const totalDeductQty = item.quantity + (item.bonusQuantity ?? 0);
           await tx.stockItem.update({
@@ -375,7 +473,7 @@ export async function createInvoice(
       }
 
       // 5. Update Client Balance — only for the outstanding credit portion
-      if (data.type === InvoiceType.CREDIT && remainingAmount > 0) {
+      if (effectiveType === InvoiceType.CREDIT && remainingAmount > 0) {
         await tx.pharmacy.update({
           where: { id: data.pharmacyId },
           data: { currentBalance: { increment: remainingAmount } },
@@ -563,6 +661,45 @@ export async function recordInvoicePayment(
               await tx.repMonthlyTargetItem.update({
                 where: { id: targetItem.id },
                 data: { achievedQuantity: { increment: pi.paidQuantity } },
+              });
+            }
+          }
+        }
+      }
+
+      // 3.5 LEGACY DEBT: Save dummy target items for rep target tracking.
+      // CRITICAL: These items NEVER touch stock. Strictly for target calculations.
+      if (data.targetItems && data.targetItems.length > 0 && invoice.isLegacy) {
+        await tx.paymentTargetItem.createMany({
+          data: data.targetItems.map((ti) => ({
+            paymentId: payment.id,
+            productId: ti.productId,
+            quantity: ti.quantity,
+            price: ti.price,
+          })),
+        });
+
+        // Update Rep Monthly Target achievedQuantity from legacy target items
+        const legacyRepTarget = await tx.repMonthlyTarget.findUnique({
+          where: {
+            salesRepId_month_year: {
+              salesRepId: invoice.salesRepId,
+              month: new Date().getMonth() + 1,
+              year: new Date().getFullYear(),
+            },
+          },
+          include: { items: true },
+        });
+
+        if (legacyRepTarget) {
+          for (const ti of data.targetItems) {
+            const targetItem = legacyRepTarget.items.find(
+              (item) => item.productId === ti.productId
+            );
+            if (targetItem) {
+              await tx.repMonthlyTargetItem.update({
+                where: { id: targetItem.id },
+                data: { achievedQuantity: { increment: ti.quantity } },
               });
             }
           }

@@ -51,19 +51,57 @@ const Schema = z.object({
   paidAmount: z.coerce.number().min(0).optional().default(0),
   notes: z.string().optional(),
   isLegacy: z.boolean().optional().default(false),
+  /// LEGACY DEBT: total debt amount — only used when isLegacy is true
+  legacyDebtAmount: z.coerce.number().min(0).optional().default(0),
   issueDate: z.string().optional(),
   // Upfront itemized payment items (for CREDIT invoices)
   upfrontPaymentItems: z.array(UpfrontPaymentItemSchema).optional().default([]),
   items: z
     .array(
       z.object({
-        productId: z.string().min(1, "اختر منتجاً"),
-        quantity: z.coerce.number().positive("يجب أن تكون الكمية موجبة"),
+        productId: z.string().optional().default(""),
+        quantity: z.coerce.number().optional().default(1),
         bonusQuantity: z.coerce.number().min(0).optional().default(0), // free boxes
-        unitPrice: z.coerce.number().min(0, "السعر غير صالح").optional().default(0),
+        unitPrice: z.coerce.number().min(0).optional().default(0),
       })
     )
-    .min(1, "أضف منتجاً واحداً على الأقل"),
+    .optional()
+    .default([]),
+}).superRefine((data, ctx) => {
+  if (data.isLegacy) {
+    if (!data.legacyDebtAmount || Number(data.legacyDebtAmount) <= 0) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["legacyDebtAmount"],
+        message: "قيمة المديونية يجب أن تكون أكبر من 0",
+      });
+    }
+  } else {
+    if (!data.items || data.items.length === 0) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["items"],
+        message: "أضف صنفاً واحداً على الأقل للفاتورة",
+      });
+    } else {
+      data.items.forEach((item, index) => {
+        if (!item.productId || item.productId.trim() === "") {
+          ctx.addIssue({
+            code: z.ZodIssueCode.custom,
+            path: ["items", index, "productId"],
+            message: "اختر منتجاً",
+          });
+        }
+        if (!item.quantity || Number(item.quantity) <= 0) {
+          ctx.addIssue({
+            code: z.ZodIssueCode.custom,
+            path: ["items", index, "quantity"],
+            message: "يجب أن تكون الكمية موجبة",
+          });
+        }
+      });
+    }
+  }
 });
 
 type FormData = z.input<typeof Schema>;
@@ -93,6 +131,7 @@ export function InvoiceForm({ pharmacies, salesReps, products, initialClientId }
       discountValue: 0,
       paidAmount: 0,
       isLegacy: false,
+      legacyDebtAmount: 0,
       issueDate: new Date().toISOString().split('T')[0],
       upfrontPaymentItems: [],
       items: [{ productId: "", quantity: 1, bonusQuantity: 0, unitPrice: 0 }],
@@ -108,6 +147,14 @@ export function InvoiceForm({ pharmacies, salesReps, products, initialClientId }
   const discountValue = useWatch({ control, name: "discountValue" });
   const paidAmount = useWatch({ control, name: "paidAmount" });
   const isLegacy = useWatch({ control, name: "isLegacy" });
+  const legacyDebtAmount = useWatch({ control, name: "legacyDebtAmount" });
+
+  // When isLegacy is toggled on, force the invoice type to CREDIT
+  useEffect(() => {
+    if (isLegacy) {
+      setValue("type", InvoiceType.CREDIT, { shouldValidate: true });
+    }
+  }, [isLegacy, setValue]);
 
   // Dynamically calculate and set paidAmount based on upfrontPaymentItems
   useEffect(() => {
@@ -129,29 +176,38 @@ export function InvoiceForm({ pharmacies, salesReps, products, initialClientId }
   }, [discountValue, discountType]);
 
   // Subtotal = only billed quantity * price (bonus is free)
-  const subtotal =
+  // For LEGACY: subtotal is the manually-entered debt amount
+  const itemsSubtotal =
     watchItems?.reduce(
       (sum: number, item: { quantity?: number; unitPrice?: number }) =>
         sum + (item.quantity || 0) * (item.unitPrice || 0),
       0
     ) || 0;
 
-  const discountAmount = calculateDiscountAmount(
-    subtotal,
-    discountType ?? DiscountType.PERCENTAGE,
-    Number(discountValue ?? 0)
-  );
+  const subtotal = isLegacy ? (Number(legacyDebtAmount) || 0) : itemsSubtotal;
 
-  const total = calculateNetTotal(subtotal, discountAmount);
+  const discountAmount = isLegacy
+    ? 0
+    : calculateDiscountAmount(
+        subtotal,
+        discountType ?? DiscountType.PERCENTAGE,
+        Number(discountValue ?? 0)
+      );
+
+  const total = isLegacy ? subtotal : calculateNetTotal(subtotal, discountAmount);
 
   // ── Proportional discount factor ──
   // Used to compute discountedUnitPrice per item for upfront payment and returns
-  const discountFactor = subtotal > 0 ? total / subtotal : 1;
+  const discountFactor = itemsSubtotal > 0 ? total / itemsSubtotal : 1;
 
-  const isCash = selectedType === InvoiceType.CASH;
+  // LEGACY invoices are always CREDIT (آجل)
+  const isCash = !isLegacy && selectedType === InvoiceType.CASH;
 
   // Compute the upfront paid amount from itemized entries
-  const upfrontPaid = isCash
+  // LEGACY invoices always start with 0 paid (full amount deferred)
+  const upfrontPaid = isLegacy
+    ? 0
+    : isCash
     ? total
     : Number(paidAmount || 0);
   const remainingAmount = Math.max(0, total - upfrontPaid);
@@ -197,7 +253,7 @@ export function InvoiceForm({ pharmacies, salesReps, products, initialClientId }
         const existing = currentUpfront.find((u) => u.productId === item.productId);
         const discountedPrice = (Number(item.unitPrice) || 0) * factor;
         return {
-          productId: item.productId,
+          productId: item.productId as string,
           paidQuantity: existing?.paidQuantity || 0,
           unitPrice: discountedPrice, // discountedUnitPrice
         };
@@ -211,6 +267,9 @@ export function InvoiceForm({ pharmacies, salesReps, products, initialClientId }
       : pharmacies.filter((p) => p.clientType === clientFilter);
 
   const onSubmit = (data: FormData) => {
+    if (data.isLegacy) {
+      data.items = []; // Clear any hidden empty rows
+    }
     setServerError(null);
     startTransition(async () => {
       const result = await createInvoice({
@@ -219,20 +278,27 @@ export function InvoiceForm({ pharmacies, salesReps, products, initialClientId }
         discountValue: data.discountValue ?? 0,
         paidAmount: data.paidAmount ?? 0,
         isLegacy: data.isLegacy ?? false,
+        legacyDebtAmount: data.isLegacy ? (Number(data.legacyDebtAmount) || 0) : 0,
         issueDate: data.isLegacy && data.issueDate ? new Date(data.issueDate) : undefined,
         // upfrontPaymentItems carry discountedUnitPrice as unitPrice
-        upfrontPaymentItems: (data.upfrontPaymentItems ?? []).filter(
-          (pi) => (pi.paidQuantity ?? 0) > 0
-        ).map((pi) => ({
-          ...pi,
-          paidQuantity: pi.paidQuantity ?? 0,
-          unitPrice: pi.unitPrice ?? 0, // discountedUnitPrice
-        })),
-        items: data.items.map(item => ({
-          ...item,
-          unitPrice: item.unitPrice ?? 0,
-          bonusQuantity: item.bonusQuantity ?? 0,
-        })),
+        upfrontPaymentItems: data.isLegacy
+          ? []
+          : (data.upfrontPaymentItems ?? []).filter(
+              (pi) => (pi.paidQuantity ?? 0) > 0
+            ).map((pi) => ({
+              ...pi,
+              paidQuantity: pi.paidQuantity ?? 0,
+              unitPrice: pi.unitPrice ?? 0, // discountedUnitPrice
+            })),
+        // LEGACY invoices have no items
+        items: data.isLegacy
+          ? []
+          : (data.items ?? []).map((item) => ({
+              productId: (item.productId || "") as string,
+              quantity: (item.quantity || 1) as number,
+              unitPrice: item.unitPrice ?? 0,
+              bonusQuantity: item.bonusQuantity ?? 0,
+            })),
       });
       if (result.success) {
         toast.success("تم إصدار الفاتورة بنجاح");
@@ -295,61 +361,105 @@ export function InvoiceForm({ pharmacies, salesReps, products, initialClientId }
         <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
 
           {isLegacy && (
-            <div className="space-y-1.5 md:col-span-2 bg-amber-50/50 dark:bg-amber-900/5 p-4 rounded-xl border border-amber-100 dark:border-amber-900/30">
-              <label className="text-sm font-bold text-amber-800 dark:text-amber-400">
-                تاريخ الفاتورة السابقة
-              </label>
-              <p className="text-xs text-amber-700/80 dark:text-amber-500/80 mb-2">
-                لن يتم خصم المخزون لهذه الفاتورة، ولن تحتسب ضمن أهداف المندوبين.
+            <div className="space-y-3 md:col-span-2 bg-amber-50/50 dark:bg-amber-900/5 p-4 rounded-xl border border-amber-200 dark:border-amber-900/30">
+              <div className="flex items-center gap-2 mb-1">
+                <span className="text-sm font-bold text-amber-800 dark:text-amber-400">
+                  ⚠️ تسجيل مديونية سابقة
+                </span>
+                <span className="text-xs bg-amber-100 dark:bg-amber-900/30 text-amber-700 dark:text-amber-400 px-2 py-0.5 rounded-full font-medium">
+                  آجل تلقائياً
+                </span>
+              </div>
+              <p className="text-xs text-amber-700/80 dark:text-amber-500/80">
+                لن يتم خصم المخزون لهذه الفاتورة، ولن تحتسب ضمن أهداف المندوبين عند الإنشاء.
               </p>
-              <input
-                type="date"
-                {...register("issueDate")}
-                className={cn(inputClass, "border-amber-200 dark:border-amber-900/50")}
-              />
+              {/* Debt Amount */}
+              <div className="space-y-1.5">
+                <label className="text-sm font-semibold text-amber-800 dark:text-amber-400">
+                  قيمة المديونية (ج.م) *
+                </label>
+                <input
+                  type="number"
+                  step="0.01"
+                  min={0}
+                  {...register("legacyDebtAmount", { valueAsNumber: true })}
+                  placeholder="مثال: 5000.00"
+                  className={cn(inputClass, "border-amber-300 dark:border-amber-700 text-lg font-bold text-amber-800 dark:text-amber-300 bg-amber-50/50 dark:bg-amber-900/10")}
+                />
+                {(errors as any).legacyDebtAmount && (
+                  <p className="text-red-500 text-xs">{(errors as any).legacyDebtAmount?.message}</p>
+                )}
+                {Number(legacyDebtAmount) > 0 && (
+                  <p className="text-xs text-amber-700 dark:text-amber-400 font-medium">
+                    إجمالي المديونية: <span className="font-bold">{formatCurrency(String(legacyDebtAmount))}</span>
+                  </p>
+                )}
+              </div>
+              {/* Date */}
+              <div className="space-y-1.5">
+                <label className="text-sm font-semibold text-amber-800 dark:text-amber-400">
+                  تاريخ الفاتورة السابقة
+                </label>
+                <input
+                  type="date"
+                  {...register("issueDate")}
+                  className={cn(inputClass, "border-amber-200 dark:border-amber-900/50")}
+                />
+              </div>
             </div>
           )}
 
-          {/* Invoice Type Toggle */}
-          <div className="space-y-1.5 md:col-span-2">
-            <label className="text-sm font-medium">نوع الفاتورة</label>
-            <div className="grid grid-cols-2 gap-2 max-w-xs">
-              <label
-                className={cn(
-                  "flex items-center justify-center gap-2 p-2.5 rounded-lg border cursor-pointer transition-colors text-sm font-medium",
-                  selectedType === InvoiceType.CASH
-                    ? "border-green-500 bg-green-50 dark:bg-green-900/20 text-green-700 dark:text-green-400"
-                    : "border-border hover:bg-muted text-muted-foreground"
-                )}
-              >
-                <input
-                  type="radio"
-                  value={InvoiceType.CASH}
-                  {...register("type")}
-                  className="sr-only"
-                />
-                <Wallet className="w-4 h-4" />
-                نقدي
-              </label>
-              <label
-                className={cn(
-                  "flex items-center justify-center gap-2 p-2.5 rounded-lg border cursor-pointer transition-colors text-sm font-medium",
-                  selectedType === InvoiceType.CREDIT
-                    ? "border-amber-500 bg-amber-50 dark:bg-amber-900/20 text-amber-700 dark:text-amber-400"
-                    : "border-border hover:bg-muted text-muted-foreground"
-                )}
-              >
-                <input
-                  type="radio"
-                  value={InvoiceType.CREDIT}
-                  {...register("type")}
-                  className="sr-only"
-                />
-                <CreditCard className="w-4 h-4" />
-                آجل
-              </label>
+          {/* Invoice Type Toggle — hidden for LEGACY (always CREDIT) */}
+          {!isLegacy ? (
+            <div className="space-y-1.5 md:col-span-2">
+              <label className="text-sm font-medium">نوع الفاتورة</label>
+              <div className="grid grid-cols-2 gap-2 max-w-xs">
+                <label
+                  className={cn(
+                    "flex items-center justify-center gap-2 p-2.5 rounded-lg border cursor-pointer transition-colors text-sm font-medium",
+                    selectedType === InvoiceType.CASH
+                      ? "border-green-500 bg-green-50 dark:bg-green-900/20 text-green-700 dark:text-green-400"
+                      : "border-border hover:bg-muted text-muted-foreground"
+                  )}
+                >
+                  <input
+                    type="radio"
+                    value={InvoiceType.CASH}
+                    {...register("type")}
+                    className="sr-only"
+                  />
+                  <Wallet className="w-4 h-4" />
+                  نقدي
+                </label>
+                <label
+                  className={cn(
+                    "flex items-center justify-center gap-2 p-2.5 rounded-lg border cursor-pointer transition-colors text-sm font-medium",
+                    selectedType === InvoiceType.CREDIT
+                      ? "border-amber-500 bg-amber-50 dark:bg-amber-900/20 text-amber-700 dark:text-amber-400"
+                      : "border-border hover:bg-muted text-muted-foreground"
+                  )}
+                >
+                  <input
+                    type="radio"
+                    value={InvoiceType.CREDIT}
+                    {...register("type")}
+                    className="sr-only"
+                  />
+                  <CreditCard className="w-4 h-4" />
+                  آجل
+                </label>
+              </div>
             </div>
-          </div>
+          ) : (
+            <div className="space-y-1.5 md:col-span-2">
+              <label className="text-sm font-medium">نوع الفاتورة</label>
+              <div className="flex items-center gap-2 px-3 py-2.5 rounded-xl border border-amber-300 dark:border-amber-700 bg-amber-50 dark:bg-amber-900/10 max-w-xs">
+                <CreditCard className="w-4 h-4 text-amber-600" />
+                <span className="text-sm font-semibold text-amber-700 dark:text-amber-400">آجل (مثبت للمديونية)</span>
+              </div>
+              <input type="hidden" {...register("type")} value={InvoiceType.CREDIT} />
+            </div>
+          )}
 
           {/* Manual Invoice Number */}
           <div className="space-y-1.5 md:col-span-2">
@@ -433,7 +543,9 @@ export function InvoiceForm({ pharmacies, salesReps, products, initialClientId }
       </div>
 
       {/* ─── Section 2: Invoice Items ────────────────────────────── */}
-      <div className="bg-card border border-border rounded-xl p-5">
+      {!isLegacy && (
+        <>
+          <div className="bg-card border border-border rounded-xl p-5">
         <div className="flex items-center justify-between mb-4">
           <h2 className="font-semibold text-sm">الأصناف (المنتجات)</h2>
           <button
@@ -641,16 +753,40 @@ export function InvoiceForm({ pharmacies, salesReps, products, initialClientId }
           </div>
         </div>
       </div>
+    </>
+  )}
 
       {/* ─── Section 4: Payment ─────────────────────────────────── */}
-      <div
-        className={cn(
-          "border rounded-xl p-5 transition-colors",
-          isCash
-            ? "bg-green-50 dark:bg-green-900/10 border-green-200 dark:border-green-800/40"
-            : "bg-amber-50 dark:bg-amber-900/10 border-amber-200 dark:border-amber-800/40"
-        )}
-      >
+      {isLegacy ? (
+        <div className="bg-amber-50/60 dark:bg-amber-900/10 border border-amber-200 dark:border-amber-800/40 rounded-xl p-5">
+          <div className="flex items-start gap-3">
+            <div className="w-10 h-10 rounded-xl bg-amber-100 dark:bg-amber-900/30 flex items-center justify-center shrink-0">
+              <CreditCard className="w-5 h-5 text-amber-600" />
+            </div>
+            <div className="flex-1">
+              <h3 className="font-semibold text-sm text-amber-800 dark:text-amber-400">
+                تسجيل مديونية سابقة — آجل بالكامل (رصيد سابق)
+              </h3>
+              <p className="text-xs text-amber-700/90 dark:text-amber-500/90 mt-1">
+                سيتم قيد مبلغ <span className="font-bold text-amber-900 dark:text-amber-300">{formatCurrency(total.toString())}</span> كدين مستحق على العميل بدون دفعة أولى وبدون أي مساس بأرصدة المخازن أو أصناف المنتجات.
+              </p>
+              <div className="mt-3 flex flex-wrap items-center gap-6 text-xs text-amber-800 dark:text-amber-400 font-medium bg-amber-100/50 dark:bg-amber-900/20 p-3 rounded-lg border border-amber-200/50 dark:border-amber-800/30">
+                <div>إجمالي الدين المقيد: <span className="font-bold text-foreground">{formatCurrency(total.toString())}</span></div>
+                <div>المدفوع حالياً: <span className="font-bold text-muted-foreground">0.00 ج.م</span></div>
+                <div>المتبقي للدفع: <span className="font-bold text-red-600 dark:text-red-400">{formatCurrency(total.toString())}</span></div>
+              </div>
+            </div>
+          </div>
+        </div>
+      ) : (
+        <div
+          className={cn(
+            "border rounded-xl p-5 transition-colors",
+            isCash
+              ? "bg-green-50 dark:bg-green-900/10 border-green-200 dark:border-green-800/40"
+              : "bg-amber-50 dark:bg-amber-900/10 border-amber-200 dark:border-amber-800/40"
+          )}
+        >
         {isCash ? (
           <div className="flex items-center gap-3">
             <div className="w-10 h-10 rounded-xl bg-green-100 dark:bg-green-900/30 flex items-center justify-center shrink-0">
@@ -784,6 +920,7 @@ export function InvoiceForm({ pharmacies, salesReps, products, initialClientId }
           </div>
         )}
       </div>
+      )}
 
       {/* ─── Notes ──────────────────────────────────────────────── */}
       <div className="bg-card border border-border rounded-xl p-5">
@@ -813,14 +950,19 @@ export function InvoiceForm({ pharmacies, salesReps, products, initialClientId }
         <button
           type="submit"
           disabled={isPending}
-          className="flex items-center gap-2 px-6 py-2.5 rounded-xl bg-primary text-primary-foreground text-sm font-semibold hover:bg-primary/90 disabled:opacity-60"
+          className={cn(
+            "flex items-center gap-2 px-6 py-2.5 rounded-xl text-sm font-semibold disabled:opacity-60 transition-colors",
+            isLegacy
+              ? "bg-amber-600 hover:bg-amber-700 text-white"
+              : "bg-primary text-primary-foreground hover:bg-primary/90"
+          )}
         >
           {isPending ? (
             <Loader2 className="w-4 h-4 animate-spin" />
           ) : (
             <FileText className="w-4 h-4" />
           )}
-          إصدار الفاتورة
+          {isLegacy ? "تسجيل المديونية السابقة" : "إصدار الفاتورة"}
         </button>
       </div>
     </form>

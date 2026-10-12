@@ -1,6 +1,7 @@
 import { notFound } from "next/navigation";
 import Link from "next/link";
 import { getInvoiceById } from "@/queries/sales";
+import { getAllProducts } from "@/queries/inventory";
 import { PaymentForm } from "@/components/sales/payment-form";
 import { ReturnForm } from "@/components/sales/return-form";
 import { PrintButton } from "./print-button";
@@ -30,8 +31,19 @@ const STATUS_LABELS: Record<InvoiceStatus, { label: string; class: string }> = {
 };
 
 export default async function InvoiceDetailPage({ params }: Props) {
-  const invoice = await getInvoiceById(params.id);
+  const [invoice, products] = await Promise.all([
+    getInvoiceById(params.id),
+    getAllProducts(),
+  ]);
   if (!invoice) notFound();
+
+  const allProductOptions = products.map((p) => ({
+    id: p.id,
+    name: p.name,
+    sku: p.sku,
+    unit: p.unit,
+    price: Number(p.sellingPrice) || 0,
+  }));
 
   const statusInfo = STATUS_LABELS[invoice.status];
   const hasDiscount = Number(invoice.discountAmount) > 0;
@@ -80,12 +92,17 @@ export default async function InvoiceDetailPage({ params }: Props) {
 
         <div className="page-header mb-6">
           <div>
-            <h1 className="page-title flex items-center gap-2">
+            <h1 className="page-title flex items-center gap-2 flex-wrap">
               <FileText className="w-6 h-6 text-primary" />
               تفاصيل الفاتورة
-              <span className={cn("text-xs font-medium px-2.5 py-1 rounded-full mr-3", statusInfo.class)}>
+              <span className={cn("text-xs font-medium px-2.5 py-1 rounded-full mr-2", statusInfo.class)}>
                 {statusInfo.label}
               </span>
+              {invoice.isLegacy && (
+                <span className="text-xs font-semibold px-2.5 py-1 rounded-full bg-amber-100 text-amber-800 dark:bg-amber-900/40 dark:text-amber-300 border border-amber-300 dark:border-amber-700">
+                  ⚠️ مديونية سابقة
+                </span>
+              )}
             </h1>
             <p className="page-subtitle font-mono mt-1"># {invoice.invoiceNumber}</p>
           </div>
@@ -106,11 +123,13 @@ export default async function InvoiceDetailPage({ params }: Props) {
                 <p className="text-sm text-muted-foreground">سوهاج، مصر</p>
               </div>
               <div className="text-left">
-                <h2 className="text-xl font-bold text-foreground mb-1">فاتورة مبيعات</h2>
+                <h2 className="text-xl font-bold text-foreground mb-1">
+                  {invoice.isLegacy ? "سند مديونية سابقة" : "فاتورة مبيعات"}
+                </h2>
                 <p className="text-sm text-muted-foreground font-mono">رقم: {invoice.invoiceNumber}</p>
                 <p className="text-sm text-muted-foreground">التاريخ: {formatDate(invoice.invoiceDate)}</p>
                 <p className="text-sm font-medium mt-2">
-                  النوع: {invoice.type === "CASH" ? "نقدي" : "آجل"}
+                  النوع: {invoice.isLegacy ? "مديونية سابقة (آجل)" : invoice.type === "CASH" ? "نقدي" : "آجل"}
                 </p>
               </div>
             </div>
@@ -140,52 +159,70 @@ export default async function InvoiceDetailPage({ params }: Props) {
               </div>
             </div>
 
-            {/* Items Table */}
-            <div className="mb-8 overflow-hidden rounded-xl border border-border/50 print:border-border">
-              <table className="w-full text-sm">
-                <thead>
-                  <tr className="bg-muted/40 border-b border-border/50">
-                    <th className="text-right px-4 py-3 font-semibold text-muted-foreground">المنتج</th>
-                    <th className="text-center px-4 py-3 font-semibold text-muted-foreground">الكمية</th>
-                    <th className="text-center px-4 py-3 font-semibold text-muted-foreground">الكمية بعد المرتجع</th>
-                    <th className="text-center px-4 py-3 font-semibold text-muted-foreground">المتبقية للدفع</th>
-                    <th className="text-center px-4 py-3 font-semibold text-muted-foreground">سعر الوحدة (بعد الخصم)</th>
-                    <th className="text-center px-4 py-3 font-semibold text-muted-foreground">الإجمالي</th>
-                  </tr>
-                </thead>
-                <tbody className="divide-y divide-border/50">
-                  {invoice.items.map((item) => {
-                    const calc = itemCalculations[item.id];
-                    return (
-                    <tr key={item.id} className="print:break-inside-avoid">
-                      <td className="px-4 py-3">
-                        <p className="font-medium text-foreground">{item.product.name}</p>
-                        <p className="text-xs text-muted-foreground font-mono">{item.product.sku}</p>
-                      </td>
-                      <td className="px-4 py-3 text-center">{Number(item.quantity).toFixed(2)} {item.product.unit}</td>
-                      <td className="px-4 py-3 text-center font-semibold text-primary">
-                        {calc.netQty} {item.product.unit}
-                        {calc.returnedQty > 0 && <span className="block text-[10px] text-red-500 font-normal">(-{calc.returnedQty} مرتجع)</span>}
-                      </td>
-                      <td className="px-4 py-3 text-center text-amber-600 font-semibold">{calc.pendingQty} {item.product.unit}</td>
-                      <td className="px-4 py-3 text-center">
-                        {Number(item.discountedUnitPrice) > 0 && Number(item.discountedUnitPrice) !== Number(item.unitPrice) ? (
-                          <div className="flex flex-col items-center gap-0.5">
-                            <span className="text-[10px] text-muted-foreground line-through">{formatCurrency(item.unitPrice.toString())}</span>
-                            <span className="font-bold text-primary">{formatCurrency(item.discountedUnitPrice.toString())}</span>
-                          </div>
-                        ) : (
-                          <span className="font-medium">{formatCurrency(item.unitPrice.toString())}</span>
-                        )}
-                      </td>
-                      <td className="px-4 py-3 text-center font-semibold text-foreground">
-                        {formatCurrency((Number(item.discountedUnitPrice) > 0 ? Number(item.discountedUnitPrice) * Number(item.quantity) : Number(item.lineTotal)).toString())}
-                      </td>
+            {/* Items Table / Legacy Debt Banner */}
+            {invoice.isLegacy ? (
+              <div className="mb-8 p-6 rounded-xl border border-amber-200 dark:border-amber-900/50 bg-amber-50/50 dark:bg-amber-900/10 text-right print:border print:border-amber-400">
+                <div className="flex items-center gap-2 mb-2 text-amber-800 dark:text-amber-400 font-bold text-base">
+                  <AlertTriangle className="w-5 h-5 text-amber-600 shrink-0" />
+                  تسجيل مديونية سابقة (رصيد سابق مرحل للعميل)
+                </div>
+                <p className="text-sm text-amber-700 dark:text-amber-500 leading-relaxed">
+                  هذه الفاتورة تم تسجيلها كمديونية سابقة مستحقة على العميل دون حركة صرف مخزني أو أصناف مدرجة في الفاتورة الأصلية. يتم سداد المديونية واحتساب أهداف المندوبين لاحقاً عند تسجيل الدفعات.
+                </p>
+                <div className="mt-4 pt-3 border-t border-amber-200/60 dark:border-amber-900/40 flex justify-between items-center">
+                  <span className="text-sm text-muted-foreground font-medium">إجمالي المديونية المقيدة:</span>
+                  <span className="text-xl font-bold text-amber-900 dark:text-amber-200">
+                    {formatCurrency(invoice.total.toString())}
+                  </span>
+                </div>
+              </div>
+            ) : (
+              <div className="mb-8 overflow-hidden rounded-xl border border-border/50 print:border-border">
+                <table className="w-full text-sm">
+                  <thead>
+                    <tr className="bg-muted/40 border-b border-border/50">
+                      <th className="text-right px-4 py-3 font-semibold text-muted-foreground">المنتج</th>
+                      <th className="text-center px-4 py-3 font-semibold text-muted-foreground">الكمية</th>
+                      <th className="text-center px-4 py-3 font-semibold text-muted-foreground">الكمية بعد المرتجع</th>
+                      <th className="text-center px-4 py-3 font-semibold text-muted-foreground">المتبقية للدفع</th>
+                      <th className="text-center px-4 py-3 font-semibold text-muted-foreground">سعر الوحدة (بعد الخصم)</th>
+                      <th className="text-center px-4 py-3 font-semibold text-muted-foreground">الإجمالي</th>
                     </tr>
-                  )})}
-                </tbody>
-              </table>
-            </div>
+                  </thead>
+                  <tbody className="divide-y divide-border/50">
+                    {invoice.items.map((item) => {
+                      const calc = itemCalculations[item.id];
+                      return (
+                      <tr key={item.id} className="print:break-inside-avoid">
+                        <td className="px-4 py-3">
+                          <p className="font-medium text-foreground">{item.product.name}</p>
+                          <p className="text-xs text-muted-foreground font-mono">{item.product.sku}</p>
+                        </td>
+                        <td className="px-4 py-3 text-center">{Number(item.quantity).toFixed(2)} {item.product.unit}</td>
+                        <td className="px-4 py-3 text-center font-semibold text-primary">
+                          {calc.netQty} {item.product.unit}
+                          {calc.returnedQty > 0 && <span className="block text-[10px] text-red-500 font-normal">(-{calc.returnedQty} مرتجع)</span>}
+                        </td>
+                        <td className="px-4 py-3 text-center text-amber-600 font-semibold">{calc.pendingQty} {item.product.unit}</td>
+                        <td className="px-4 py-3 text-center">
+                          {Number(item.discountedUnitPrice) > 0 && Number(item.discountedUnitPrice) !== Number(item.unitPrice) ? (
+                            <div className="flex flex-col items-center gap-0.5">
+                              <span className="text-[10px] text-muted-foreground line-through">{formatCurrency(item.unitPrice.toString())}</span>
+                              <span className="font-bold text-primary">{formatCurrency(item.discountedUnitPrice.toString())}</span>
+                            </div>
+                          ) : (
+                            <span className="font-medium">{formatCurrency(item.unitPrice.toString())}</span>
+                          )}
+                        </td>
+                        <td className="px-4 py-3 text-center font-semibold text-foreground">
+                          {formatCurrency((Number(item.discountedUnitPrice) > 0 ? Number(item.discountedUnitPrice) * Number(item.quantity) : Number(item.lineTotal)).toString())}
+                        </td>
+                      </tr>
+                    )})}
+                  </tbody>
+                </table>
+              </div>
+            )}
 
             {/* Totals */}
             <div className="flex justify-end mb-8 print:break-inside-avoid">
@@ -255,6 +292,8 @@ export default async function InvoiceDetailPage({ params }: Props) {
             invoiceId={invoice.id}
             remainingAmount={Number(invoice.remainingAmount)}
             invoiceItems={invoiceItemsForPayment}
+            isLegacy={invoice.isLegacy}
+            allProducts={allProductOptions}
           />
 
           {/* Return Form (Only if not cancelled) */}
@@ -262,6 +301,8 @@ export default async function InvoiceDetailPage({ params }: Props) {
             <ReturnForm
               invoiceId={invoice.id}
               invoiceItems={invoiceItemsForPayment}
+              isLegacy={invoice.isLegacy}
+              allProducts={allProductOptions}
             />
           )}
           
@@ -271,16 +312,34 @@ export default async function InvoiceDetailPage({ params }: Props) {
               <h2 className="font-semibold text-sm mb-4">سجل المدفوعات</h2>
               <div className="space-y-3">
                 {invoice.payments.map((payment) => (
-                  <div key={payment.id} className="flex justify-between items-center p-3 bg-muted/30 rounded-lg border border-border/50">
-                    <div>
-                      <p className="font-semibold text-green-600">{formatCurrency(payment.amount.toString())}</p>
-                      <p className="text-[10px] text-muted-foreground mt-0.5">{formatDate(payment.paidAt)}</p>
-                      <p className="text-[10px] text-muted-foreground">{payment.method === "CASH" ? "نقدي" : payment.method === "BANK_TRANSFER" ? "تحويل" : "شيك"}</p>
+                  <div key={payment.id} className="p-3 bg-muted/30 rounded-lg border border-border/50 space-y-2">
+                    <div className="flex justify-between items-center">
+                      <div>
+                        <p className="font-semibold text-green-600">{formatCurrency(payment.amount.toString())}</p>
+                        <p className="text-[10px] text-muted-foreground mt-0.5">{formatDate(payment.paidAt)}</p>
+                        <p className="text-[10px] text-muted-foreground">{payment.method === "CASH" ? "نقدي" : payment.method === "BANK_TRANSFER" ? "تحويل" : "شيك"}</p>
+                      </div>
+                      {payment.referenceNo && (
+                        <span className="text-[10px] bg-muted px-2 py-0.5 rounded text-muted-foreground max-w-[100px] truncate">
+                          {payment.referenceNo}
+                        </span>
+                      )}
                     </div>
-                    {payment.referenceNo && (
-                      <span className="text-[10px] bg-muted px-2 py-0.5 rounded text-muted-foreground max-w-[100px] truncate">
-                        {payment.referenceNo}
-                      </span>
+                    {/* Display target items for legacy payments */}
+                    {(payment as any).targetItems && (payment as any).targetItems.length > 0 && (
+                      <div className="pt-2 border-t border-border/40 text-[11px] text-muted-foreground space-y-1">
+                        <p className="font-semibold text-amber-700 dark:text-amber-400">
+                          🎯 أصناف محتسبة لمستهدف المندوب:
+                        </p>
+                        {(payment as any).targetItems.map((ti: any) => (
+                          <div key={ti.id} className="flex justify-between items-center bg-background/50 px-2 py-1 rounded">
+                            <span>{ti.product?.name ?? "منتج"} × {ti.quantity}</span>
+                            <span className="font-mono text-foreground font-medium">
+                              {formatCurrency((ti.quantity * ti.price).toString())}
+                            </span>
+                          </div>
+                        ))}
+                      </div>
                     )}
                   </div>
                 ))}

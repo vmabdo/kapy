@@ -85,6 +85,8 @@ export default async function RepDetailPage({ params }: { params: { id: string }
     // Fetch all payments for this rep's invoices in the current month.
     // We include subtotal + discountAmount from the invoice so we can
     // reconstruct the original (pre-return) net total as the denominator.
+    // We also include targetItems so that Legacy Invoice payments (which have
+    // no InvoiceItems) still contribute to achievedValue via quantity * price.
     const paymentsWithContext = await prisma.payment.findMany({
       where: {
         invoice: {
@@ -112,30 +114,55 @@ export default async function RepDetailPage({ params }: { params: { id: string }
             },
           },
         },
+        // LEGACY DEBT: PaymentTargetItems live on the Payment, not the Invoice.
+        // Legacy invoices have no InvoiceItems, so the ratio-based loop below
+        // produces nothing for them. We accumulate their value directly here
+        // as quantity * price — both fields are recorded at payment time.
+        targetItems: {
+          where: { productId: { in: targetProductIds } },
+          select: {
+            productId: true,
+            quantity: true,
+            price: true,
+          },
+        },
       },
     });
 
 
     for (const payment of paymentsWithContext) {
+      // ── Path A: Regular (non-Legacy) invoices ─────────────────────────────
       // Use the original net total (immutable): subtotal − discountAmount.
       // This is completely unaffected by any return that was processed later.
       const originalNetTotal =
         Number(payment.invoice.subtotal) - Number(payment.invoice.discountAmount);
 
-      if (originalNetTotal <= 0) continue;
+      if (originalNetTotal > 0) {
+        const paymentRatio = Number(payment.amount) / originalNetTotal;
 
-      const paymentRatio = Number(payment.amount) / originalNetTotal;
+        for (const item of payment.invoice.items) {
+          // Net line value for this item, using the per-unit price already
+          // discounted proportionally at invoice creation time.
+          const itemNetLineValue =
+            Number(item.quantity) * Number(item.discountedUnitPrice);
+          const itemCollectedValue = itemNetLineValue * paymentRatio;
 
-      for (const item of payment.invoice.items) {
-        // Net line value for this item, using the per-unit price already
-        // discounted proportionally at invoice creation time.
-        const itemNetLineValue =
-          Number(item.quantity) * Number(item.discountedUnitPrice);
-        const itemCollectedValue = itemNetLineValue * paymentRatio;
+          achievedValueByProductId.set(
+            item.productId,
+            (achievedValueByProductId.get(item.productId) ?? 0) + itemCollectedValue
+          );
+        }
+      }
 
+      // ── Path B: Legacy Invoice payments ───────────────────────────────────
+      // PaymentTargetItems carry their own quantity & price snapshot recorded
+      // at payment time. The value is simply quantity * price — no ratio needed
+      // because these items already represent the exact collected amount.
+      for (const ti of payment.targetItems) {
+        const itemValue = ti.quantity * ti.price;
         achievedValueByProductId.set(
-          item.productId,
-          (achievedValueByProductId.get(item.productId) ?? 0) + itemCollectedValue
+          ti.productId,
+          (achievedValueByProductId.get(ti.productId) ?? 0) + itemValue
         );
       }
     }
