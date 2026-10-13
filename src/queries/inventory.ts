@@ -1,6 +1,5 @@
 import { prisma } from "@/lib/prisma";
 import { StockMovementSource, StockMovementType, WarehouseType } from "@prisma/client";
-import { unstable_cache } from "next/cache";
 
 // ─── Warehouses ───────────────────────────────────────────────
 
@@ -69,13 +68,9 @@ export async function getProductById(id: string) {
   });
 }
 
-export const getAllCategories = unstable_cache(
-  async () => {
-    return prisma.category.findMany({ orderBy: { name: "asc" } });
-  },
-  ["categories-list"],
-  { tags: ["categories"] }
-);
+export async function getAllCategories() {
+  return prisma.category.findMany({ orderBy: { name: "asc" } });
+}
 
 export async function getAllSuppliers() {
   return prisma.supplier.findMany({
@@ -175,10 +170,6 @@ export async function getStockMovementById(id: string) {
 
 // ─── Governorates (for forms) ─────────────────────────────────
 
-export const getAllGovernorates = unstable_cache(
-  async () => {
-    return prisma.governorate.findMany({ orderBy: { name: "asc" } });
-  },
-  ["governorates-list"],
-  { tags: ["governorates"] }
-);
+export async function getAllGovernorates() {
+  return prisma.governorate.findMany({ orderBy: { name: "asc" } });
+}

@@ -7,24 +7,29 @@ import { revalidatePath } from "next/cache";
 import { UserRole } from "@prisma/client";
 import { z } from "zod";
 
+// Optional text fields: treat empty/whitespace-only strings as "not provided"
+// so they are never persisted (and never used as a foreign key value).
+const optionalString = z
+  .string()
+  .trim()
+  .optional()
+  .transform((v) => (v && v.length > 0 ? v : undefined));
+
 const CreatePharmacySchema = z.object({
   name: z.string().min(2, "اسم الصيدلية مطلوب"),
-  licenseNumber: z.string().optional(),
-  taxNumber: z.string().optional(),
-  address: z.string().optional(),
-  phone: z.string().optional(),
-  governorateId: z.string().min(1, "اختر المحافظة"),
-  assignedRepId: z.string().optional(),
+  address: optionalString,
+  phone: optionalString,
+  governorateId: z.string().trim().min(1, "اختر المحافظة"),
+  assignedRepId: optionalString,
   creditLimit: z.coerce.number().min(0).default(50000),
   targetAmount: z.coerce.number().min(0).default(10000),
 });
 
 const UpdatePharmacySchema = z.object({
   name: z.string().min(2, "اسم الصيدلية مطلوب"),
-  licenseNumber: z.string().optional(),
-  address: z.string().optional(),
-  phone: z.string().optional(),
-  governorateId: z.string().min(1, "اختر المحافظة"),
+  address: optionalString,
+  phone: optionalString,
+  governorateId: z.string().trim().min(1, "اختر المحافظة"),
   creditLimit: z.coerce.number().min(0).default(50000),
   salesTarget: z.coerce.number().min(0).default(10000),
   isActive: z.boolean().default(true),
@@ -42,12 +47,38 @@ export async function createPharmacy(
 
     const data = CreatePharmacySchema.parse(formData);
 
+    // Fallback check: the governorate ID shown in the dropdown may be stale
+    // (e.g. served from cache after a reseed). Fail with a clear message instead
+    // of surfacing a raw P2003 foreign-key constraint violation.
+    const governorate = await prisma.governorate.findUnique({
+      where: { id: data.governorateId },
+      select: { id: true },
+    });
+    if (!governorate) {
+      return {
+        success: false,
+        error: "المحافظة المختارة غير صحيحة أو لم تعد متاحة. يرجى تحديث الصفحة واختيار المحافظة مرة أخرى.",
+      };
+    }
+
+    if (data.assignedRepId) {
+      const rep = await prisma.salesRep.findUnique({
+        where: { id: data.assignedRepId },
+        select: { id: true },
+      });
+      if (!rep) {
+        return {
+          success: false,
+          error: "المندوب المختار غير صحيح أو لم يعد متاحاً. يرجى تحديث الصفحة والمحاولة مرة أخرى.",
+        };
+      }
+    }
+
     const result = await prisma.$transaction(async (tx) => {
       // 1. Create pharmacy
       const pharmacy = await tx.pharmacy.create({
         data: {
           name: data.name,
-          licenseNumber: data.licenseNumber,
           address: data.address,
           phone: data.phone,
           governorateId: data.governorateId,
@@ -83,7 +114,7 @@ export async function createPharmacy(
     revalidatePath("/dashboard/pharmacies");
     return { success: true, data: { id: result.id }, message: "تم تسجيل الصيدلية بنجاح" };
   } catch (e: unknown) {
-    return { success: false, error: handleActionError(e) };
+    return { success: false, error: handleActionError(e, "create") };
   }
 }
 
@@ -96,13 +127,23 @@ export async function updatePharmacy(
 
     const data = UpdatePharmacySchema.parse(formData);
 
+    const governorate = await prisma.governorate.findUnique({
+      where: { id: data.governorateId },
+      select: { id: true },
+    });
+    if (!governorate) {
+      return {
+        success: false,
+        error: "المحافظة المختارة غير صحيحة أو لم تعد متاحة. يرجى تحديث الصفحة واختيار المحافظة مرة أخرى.",
+      };
+    }
+
     await prisma.pharmacy.update({
       where: { id },
       data: {
         name: data.name,
-        licenseNumber: data.licenseNumber || null,
-        address: data.address || null,
-        phone: data.phone || null,
+        address: data.address ?? null,
+        phone: data.phone ?? null,
         governorateId: data.governorateId,
         creditLimit: data.creditLimit,
         salesTarget: data.salesTarget,
@@ -114,7 +155,7 @@ export async function updatePharmacy(
     revalidatePath(`/dashboard/pharmacies/${id}`);
     return { success: true, data: undefined, message: "تم تحديث بيانات الصيدلية بنجاح" };
   } catch (e: unknown) {
-    return { success: false, error: handleActionError(e) };
+    return { success: false, error: handleActionError(e, "update") };
   }
 }
 

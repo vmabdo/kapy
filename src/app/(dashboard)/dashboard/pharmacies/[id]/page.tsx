@@ -286,16 +286,6 @@ async function PharmacyContent({ pharmacy }: { pharmacy: any }) {
                   </div>
                 </div>
               )}
-              
-              {pharmacy.licenseNumber && (
-                <div className="pt-4 border-t border-border/60 space-y-3">
-                  <p className="text-[10px] uppercase font-semibold text-muted-foreground">البيانات القانونية</p>
-                  <div className="flex justify-between items-center text-sm">
-                    <span className="text-muted-foreground">رقم الترخيص:</span>
-                    <span className="font-mono">{pharmacy.licenseNumber}</span>
-                  </div>
-                </div>
-              )}
             </div>
           </div>
         </div>

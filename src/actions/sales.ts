@@ -30,7 +30,7 @@ const UpfrontPaymentItemSchema = z.object({
 const CreateInvoiceSchema = z
   .object({
     pharmacyId: z.string().min(1, "اختر العميل"),
-    salesRepId: z.string().min(1, "اختر المندوب"),
+    salesRepId: z.string().nullable().optional(),
     type: z.nativeEnum(InvoiceType),
     notes: z.string().optional(),
     manualNumber: z.string().min(1, "رقم الفاتورة مطلوب"),
@@ -55,6 +55,13 @@ const CreateInvoiceSchema = z
         });
       }
     } else {
+      if (!data.salesRepId || data.salesRepId.trim() === "") {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: ["salesRepId"],
+          message: "اختر المندوب",
+        });
+      }
       if (!data.items || data.items.length === 0) {
         ctx.addIssue({
           code: z.ZodIssueCode.custom,
@@ -88,6 +95,8 @@ const RecordPaymentSchema = z.object({
   method: z.enum(["CASH", "BANK_TRANSFER", "CHECK"]).default("CASH"),
   referenceNo: z.string().optional(),
   notes: z.string().optional(),
+  targetSalesRepId: z.string().optional(),
+  salesRepId: z.string().optional(),
   // Itemized payment items (optional — only for "Pay by Products" mode)
   paymentItems: z
     .array(
@@ -322,7 +331,7 @@ export async function createInvoice(
         data: {
           invoiceNumber,
           pharmacyId: data.pharmacyId,
-          salesRepId: data.salesRepId,
+          salesRepId: data.isLegacy ? null : (data.salesRepId || null),
           type: effectiveType,
           status: initialStatus,
           subtotal,
@@ -376,7 +385,7 @@ export async function createInvoice(
             movementType: "OUTBOUND",
             source: "PHARMACY",
             sourceWarehouseId: subWarehouse.id,
-            salesRepId: data.salesRepId,
+            salesRepId: data.salesRepId || null,
             notes: `صرف للفاتورة ${invoiceNumber}`,
             items: {
               create: itemsWithDiscountedPrice.map((item) => ({
@@ -415,7 +424,7 @@ export async function createInvoice(
           });
 
           // 4.2 Update Rep Monthly Target achieved quantities on upfront payment
-          if (!data.isLegacy) {
+          if (!data.isLegacy && data.salesRepId) {
             const now = new Date();
             const repMonthlyTarget = await tx.repMonthlyTarget.findUnique({
               where: {
@@ -641,27 +650,29 @@ export async function recordInvoicePayment(
 
         // 4. Update Rep Monthly Target achievedQuantity based on paid quantities
         // Targets are updated on PAYMENT, not on invoice creation
-        const repMonthlyTarget = await tx.repMonthlyTarget.findUnique({
-          where: {
-            salesRepId_month_year: {
-              salesRepId: invoice.salesRepId,
-              month: new Date().getMonth() + 1,
-              year: new Date().getFullYear(),
+        if (invoice.salesRepId) {
+          const repMonthlyTarget = await tx.repMonthlyTarget.findUnique({
+            where: {
+              salesRepId_month_year: {
+                salesRepId: invoice.salesRepId,
+                month: new Date().getMonth() + 1,
+                year: new Date().getFullYear(),
+              },
             },
-          },
-          include: { items: true },
-        });
+            include: { items: true },
+          });
 
-        if (repMonthlyTarget) {
-          for (const pi of data.paymentItems) {
-            const targetItem = repMonthlyTarget.items.find(
-              (ti) => ti.productId === pi.productId
-            );
-            if (targetItem) {
-              await tx.repMonthlyTargetItem.update({
-                where: { id: targetItem.id },
-                data: { achievedQuantity: { increment: pi.paidQuantity } },
-              });
+          if (repMonthlyTarget) {
+            for (const pi of data.paymentItems) {
+              const targetItem = repMonthlyTarget.items.find(
+                (ti) => ti.productId === pi.productId
+              );
+              if (targetItem) {
+                await tx.repMonthlyTargetItem.update({
+                  where: { id: targetItem.id },
+                  data: { achievedQuantity: { increment: pi.paidQuantity } },
+                });
+              }
             }
           }
         }
@@ -670,22 +681,38 @@ export async function recordInvoicePayment(
       // 3.5 LEGACY DEBT: Save dummy target items for rep target tracking.
       // CRITICAL: These items NEVER touch stock. Strictly for target calculations.
       if (data.targetItems && data.targetItems.length > 0 && invoice.isLegacy) {
+        const repId = data.targetSalesRepId || data.salesRepId;
+        if (!repId) {
+          throw new Error("يجب اختيار المندوب المستفيد من التارجت");
+        }
+
+        const rep = await tx.salesRep.findUnique({
+          where: { id: repId },
+          select: { id: true },
+        });
+        if (!rep) {
+          throw new Error("المندوب المحدد غير موجود");
+        }
+
         await tx.paymentTargetItem.createMany({
           data: data.targetItems.map((ti) => ({
             paymentId: payment.id,
             productId: ti.productId,
+            salesRepId: repId,
             quantity: ti.quantity,
             price: ti.price,
           })),
         });
 
         // Update Rep Monthly Target achievedQuantity from legacy target items
+        const currentMonth = new Date().getMonth() + 1;
+        const currentYear = new Date().getFullYear();
         const legacyRepTarget = await tx.repMonthlyTarget.findUnique({
           where: {
             salesRepId_month_year: {
-              salesRepId: invoice.salesRepId,
-              month: new Date().getMonth() + 1,
-              year: new Date().getFullYear(),
+              salesRepId: repId,
+              month: currentMonth,
+              year: currentYear,
             },
           },
           include: { items: true },
@@ -719,6 +746,10 @@ export async function recordInvoicePayment(
     revalidatePath("/dashboard/reports/daily");
     revalidatePath("/dashboard/treasury");
     revalidatePath(`/dashboard/sales/${data.invoiceId}`);
+    const creditedRepId = data.targetSalesRepId || data.salesRepId;
+    if (creditedRepId) {
+      revalidatePath(`/dashboard/sales-reps/${creditedRepId}`);
+    }
     return { success: true, data: undefined, message: "تم تسجيل الدفعة بنجاح" };
   } catch (e: unknown) {
     return { success: false, error: handleActionError(e) };
@@ -803,4 +834,117 @@ export async function getRepMonthlyTarget(
       },
     },
   });
+}
+
+/**
+ * Aggregates monthly target achievements (quantity & financial value) for a sales rep.
+ * Includes both:
+ * 1. Regular invoices (proportional collection value & paid quantity)
+ * 2. Legacy debt invoices (PaymentTargetItem filtered directly by salesRepId)
+ */
+export async function getSalesRepTargetAchievements(
+  salesRepId: string,
+  month: number,
+  year: number
+) {
+  await requireAuth();
+  const startOfMonth = new Date(year, month - 1, 1);
+  const endOfMonth = new Date(year, month, 1);
+
+  // 1. Regular invoice payments
+  const regularPayments = await prisma.payment.findMany({
+    where: {
+      invoice: {
+        salesRepId,
+        isLegacy: false,
+        invoiceDate: { gte: startOfMonth },
+      },
+      paidAt: { gte: startOfMonth, lt: endOfMonth },
+    },
+    select: {
+      amount: true,
+      paymentItems: {
+        select: {
+          productId: true,
+          paidQuantity: true,
+          unitPrice: true,
+        },
+      },
+      invoice: {
+        select: {
+          subtotal: true,
+          discountAmount: true,
+          items: {
+            select: {
+              productId: true,
+              quantity: true,
+              discountedUnitPrice: true,
+            },
+          },
+        },
+      },
+    },
+  });
+
+  // 2. Legacy debt target items directly filtered by salesRepId
+  const legacyTargetItems = await prisma.paymentTargetItem.findMany({
+    where: {
+      salesRepId,
+      payment: {
+        paidAt: { gte: startOfMonth, lt: endOfMonth },
+      },
+    },
+    select: {
+      productId: true,
+      quantity: true,
+      price: true,
+    },
+  });
+
+  const achievementsByProduct = new Map<string, { achievedQty: number; achievedValue: number }>();
+
+  // Process regular payments
+  for (const payment of regularPayments) {
+    const originalNetTotal =
+      Number(payment.invoice.subtotal) - Number(payment.invoice.discountAmount);
+    if (originalNetTotal > 0) {
+      const paymentRatio = Number(payment.amount) / originalNetTotal;
+
+      for (const item of payment.invoice.items) {
+        const itemNetLineValue =
+          Number(item.quantity) * Number(item.discountedUnitPrice);
+        const itemCollectedValue = itemNetLineValue * paymentRatio;
+
+        const current = achievementsByProduct.get(item.productId) ?? {
+          achievedQty: 0,
+          achievedValue: 0,
+        };
+        current.achievedValue += itemCollectedValue;
+        achievementsByProduct.set(item.productId, current);
+      }
+    }
+
+    for (const pi of payment.paymentItems) {
+      const current = achievementsByProduct.get(pi.productId) ?? {
+        achievedQty: 0,
+        achievedValue: 0,
+      };
+      current.achievedQty += Number(pi.paidQuantity);
+      achievementsByProduct.set(pi.productId, current);
+    }
+  }
+
+  // Process legacy target items
+  for (const ti of legacyTargetItems) {
+    const itemValue = ti.quantity * ti.price;
+    const current = achievementsByProduct.get(ti.productId) ?? {
+      achievedQty: 0,
+      achievedValue: 0,
+    };
+    current.achievedQty += ti.quantity;
+    current.achievedValue += itemValue;
+    achievementsByProduct.set(ti.productId, current);
+  }
+
+  return achievementsByProduct;
 }

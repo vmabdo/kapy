@@ -213,7 +213,7 @@ export default async function SalesPage({ searchParams }: PageProps) {
                         <p className="text-xs text-muted-foreground flex items-center gap-1 mt-0.5">
                           {invoice.pharmacy.governorate.name}
                           <ArrowRight className="w-2.5 h-2.5 rotate-180" />
-                          المندوب: {invoice.salesRep.name}
+                          المندوب: {invoice.salesRep?.name ?? "غير محدد / مديونية عامة"}
                         </p>
                       </td>
                       <td className="px-4 py-3 text-center">

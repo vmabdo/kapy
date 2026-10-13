@@ -49,7 +49,6 @@ export default async function EditPharmacyPage({ params }: Props) {
         pharmacy={{
           id: pharmacy.id,
           name: pharmacy.name,
-          licenseNumber: pharmacy.licenseNumber,
           address: pharmacy.address,
           phone: pharmacy.phone,
           governorateId: pharmacy.governorateId,

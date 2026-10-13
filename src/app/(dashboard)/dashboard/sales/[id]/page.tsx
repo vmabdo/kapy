@@ -1,6 +1,6 @@
 import { notFound } from "next/navigation";
 import Link from "next/link";
-import { getInvoiceById } from "@/queries/sales";
+import { getInvoiceById, getAllSalesReps } from "@/queries/sales";
 import { getAllProducts } from "@/queries/inventory";
 import { PaymentForm } from "@/components/sales/payment-form";
 import { ReturnForm } from "@/components/sales/return-form";
@@ -31,9 +31,10 @@ const STATUS_LABELS: Record<InvoiceStatus, { label: string; class: string }> = {
 };
 
 export default async function InvoiceDetailPage({ params }: Props) {
-  const [invoice, products] = await Promise.all([
+  const [invoice, products, salesReps] = await Promise.all([
     getInvoiceById(params.id),
     getAllProducts(),
+    getAllSalesReps(),
   ]);
   if (!invoice) notFound();
 
@@ -152,8 +153,12 @@ export default async function InvoiceDetailPage({ params }: Props) {
                 <div className="flex items-center gap-2">
                   <User className="w-4 h-4 text-primary" />
                   <div>
-                    <p className="font-semibold text-foreground">{invoice.salesRep.name}</p>
-                    <p className="text-sm text-muted-foreground font-mono">{invoice.salesRep.employeeCode}</p>
+                    <p className="font-semibold text-foreground">
+                      {invoice.salesRep?.name ?? "غير محدد / مديونية عامة"}
+                    </p>
+                    {invoice.salesRep?.employeeCode && (
+                      <p className="text-sm text-muted-foreground font-mono">{invoice.salesRep.employeeCode}</p>
+                    )}
                   </div>
                 </div>
               </div>
@@ -294,6 +299,11 @@ export default async function InvoiceDetailPage({ params }: Props) {
             invoiceItems={invoiceItemsForPayment}
             isLegacy={invoice.isLegacy}
             allProducts={allProductOptions}
+            salesReps={salesReps.map((r) => ({
+              id: r.id,
+              name: r.name,
+              employeeCode: r.employeeCode,
+            }))}
           />
 
           {/* Return Form (Only if not cancelled) */}

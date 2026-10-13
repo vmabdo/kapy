@@ -43,7 +43,7 @@ const UpfrontPaymentItemSchema = z.object({
 
 const Schema = z.object({
   pharmacyId: z.string().min(1, "اختر العميل"),
-  salesRepId: z.string().min(1, "اختر المندوب"),
+  salesRepId: z.string().optional().nullable(),
   type: z.nativeEnum(InvoiceType),
   manualNumber: z.string().min(1, "رقم الفاتورة مطلوب"),
   discountType: z.nativeEnum(DiscountType).default(DiscountType.PERCENTAGE),
@@ -77,6 +77,13 @@ const Schema = z.object({
       });
     }
   } else {
+    if (!data.salesRepId || data.salesRepId.trim() === "") {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["salesRepId"],
+        message: "اختر المندوب",
+      });
+    }
     if (!data.items || data.items.length === 0) {
       ctx.addIssue({
         code: z.ZodIssueCode.custom,
@@ -149,10 +156,11 @@ export function InvoiceForm({ pharmacies, salesReps, products, initialClientId }
   const isLegacy = useWatch({ control, name: "isLegacy" });
   const legacyDebtAmount = useWatch({ control, name: "legacyDebtAmount" });
 
-  // When isLegacy is toggled on, force the invoice type to CREDIT
+  // When isLegacy is toggled on, force the invoice type to CREDIT and clear salesRepId
   useEffect(() => {
     if (isLegacy) {
       setValue("type", InvoiceType.CREDIT, { shouldValidate: true });
+      setValue("salesRepId", "");
     }
   }, [isLegacy, setValue]);
 
@@ -274,6 +282,7 @@ export function InvoiceForm({ pharmacies, salesReps, products, initialClientId }
     startTransition(async () => {
       const result = await createInvoice({
         ...data,
+        salesRepId: data.isLegacy ? null : (data.salesRepId || null),
         discountType: data.discountType ?? DiscountType.PERCENTAGE,
         discountValue: data.discountValue ?? 0,
         paidAmount: data.paidAmount ?? 0,
@@ -525,20 +534,22 @@ export function InvoiceForm({ pharmacies, salesReps, products, initialClientId }
           </div>
 
           {/* Sales Rep */}
-          <div className="space-y-1.5 md:col-span-2">
-            <label className="text-sm font-medium">مندوب المبيعات</label>
-            <select {...register("salesRepId")} className={inputClass}>
-              <option value="">اختر المندوب</option>
-              {salesReps.map((r) => (
-                <option key={r.id} value={r.id}>
-                  {r.name} ({r.employeeCode})
-                </option>
-              ))}
-            </select>
-            {errors.salesRepId && (
-              <p className="text-red-500 text-xs">{errors.salesRepId.message}</p>
-            )}
-          </div>
+          {!isLegacy && (
+            <div className="space-y-1.5 md:col-span-2">
+              <label className="text-sm font-medium">مندوب المبيعات</label>
+              <select {...register("salesRepId")} className={inputClass}>
+                <option value="">اختر المندوب</option>
+                {salesReps.map((r) => (
+                  <option key={r.id} value={r.id}>
+                    {r.name} ({r.employeeCode})
+                  </option>
+                ))}
+              </select>
+              {errors.salesRepId && (
+                <p className="text-red-500 text-xs">{errors.salesRepId.message}</p>
+              )}
+            </div>
+          )}
         </div>
       </div>
 

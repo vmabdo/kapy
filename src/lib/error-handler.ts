@@ -1,7 +1,9 @@
 import { Prisma } from "@prisma/client";
 import { ZodError } from "zod";
 
-export function handleActionError(e: unknown): string {
+type ErrorContext = "create" | "update" | "delete";
+
+export function handleActionError(e: unknown, context?: ErrorContext): string {
   if (e instanceof ZodError) {
     const errorMessages = e.errors.map((err) => err.message).join(", ");
     return `خطأ في البيانات: ${errorMessages}`;
@@ -15,6 +17,19 @@ export function handleActionError(e: unknown): string {
     }
     // Foreign key constraint failed
     if (e.code === "P2003") {
+      const field = String(e.meta?.field_name ?? "");
+      const isGovernorate = field.includes("governorate");
+
+      // On CREATE/UPDATE (or when the offending FK is governorateId), the
+      // generic "linked to other data" delete message is misleading.
+      if (context === "create" || context === "update" || isGovernorate) {
+        if (isGovernorate) {
+          return "البيانات المرتبطة غير صحيحة (يرجى التأكد من اختيار المحافظة بشكل صحيح).";
+        }
+        return "البيانات المرتبطة غير صحيحة. يرجى التأكد من صحة القيم المرتبطة بالنظام.";
+      }
+
+      // DELETE context — the record is still referenced by other rows.
       return "لا يمكن إتمام العملية لارتباط هذا السجل ببيانات أخرى في النظام.";
     }
     // Record to update not found

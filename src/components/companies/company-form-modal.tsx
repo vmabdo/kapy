@@ -11,7 +11,6 @@ import { Building2, Loader2, X, Plus } from "lucide-react";
 
 const CreateSchema = z.object({
   name: z.string().min(2, "اسم الشركة مطلوب"),
-  licenseNumber: z.string().optional(),
   address: z.string().optional(),
   phone: z.string().optional(),
   governorateId: z.string().min(1, "اختر المحافظة"),
@@ -103,10 +102,6 @@ export function CompanyFormModal({ governorates, salesReps }: Props) {
                   {form.formState.errors.name && (
                     <p className="text-[10px] text-red-500">{form.formState.errors.name.message}</p>
                   )}
-                </div>
-                <div className="space-y-1">
-                  <label className="text-xs font-medium text-muted-foreground">رقم الترخيص / السجل التجاري</label>
-                  <input {...form.register("licenseNumber")} className={inputClass} placeholder="اختياري" />
                 </div>
                 <div className="space-y-1 md:col-span-2">
                   <label className="text-xs font-medium text-muted-foreground">العنوان</label>

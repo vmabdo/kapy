@@ -78,20 +78,23 @@ export default async function RepDetailPage({ params }: { params: { id: string }
   //   creation time and is never touched by the return flow, making it the
   //   only safe, stable denominator.
   const achievedValueByProductId = new Map<string, number>();
+  const legacyTargetQtyByProductId = new Map<string, number>();
 
   if (repMonthlyTarget && repMonthlyTarget.items.length > 0) {
     const targetProductIds = repMonthlyTarget.items.map((i) => i.productId);
+    const startOfMonth = new Date(currentYear, currentMonth - 1, 1);
+    const endOfMonth = new Date(currentYear, currentMonth, 1);
 
-    // Fetch all payments for this rep's invoices in the current month.
+    // ── Path A: Regular (non-Legacy) invoices ─────────────────────────────
+    // Fetch all payments for this rep's standard invoices in the current month.
     // We include subtotal + discountAmount from the invoice so we can
     // reconstruct the original (pre-return) net total as the denominator.
-    // We also include targetItems so that Legacy Invoice payments (which have
-    // no InvoiceItems) still contribute to achievedValue via quantity * price.
     const paymentsWithContext = await prisma.payment.findMany({
       where: {
         invoice: {
           salesRepId: rep.id,
-          invoiceDate: { gte: new Date(currentYear, currentMonth - 1, 1) },
+          isLegacy: false,
+          invoiceDate: { gte: startOfMonth },
         },
       },
       select: {
@@ -114,26 +117,10 @@ export default async function RepDetailPage({ params }: { params: { id: string }
             },
           },
         },
-        // LEGACY DEBT: PaymentTargetItems live on the Payment, not the Invoice.
-        // Legacy invoices have no InvoiceItems, so the ratio-based loop below
-        // produces nothing for them. We accumulate their value directly here
-        // as quantity * price — both fields are recorded at payment time.
-        targetItems: {
-          where: { productId: { in: targetProductIds } },
-          select: {
-            productId: true,
-            quantity: true,
-            price: true,
-          },
-        },
       },
     });
 
-
     for (const payment of paymentsWithContext) {
-      // ── Path A: Regular (non-Legacy) invoices ─────────────────────────────
-      // Use the original net total (immutable): subtotal − discountAmount.
-      // This is completely unaffected by any return that was processed later.
       const originalNetTotal =
         Number(payment.invoice.subtotal) - Number(payment.invoice.discountAmount);
 
@@ -153,18 +140,39 @@ export default async function RepDetailPage({ params }: { params: { id: string }
           );
         }
       }
+    }
 
-      // ── Path B: Legacy Invoice payments ───────────────────────────────────
-      // PaymentTargetItems carry their own quantity & price snapshot recorded
-      // at payment time. The value is simply quantity * price — no ratio needed
-      // because these items already represent the exact collected amount.
-      for (const ti of payment.targetItems) {
-        const itemValue = ti.quantity * ti.price;
-        achievedValueByProductId.set(
-          ti.productId,
-          (achievedValueByProductId.get(ti.productId) ?? 0) + itemValue
-        );
-      }
+    // ── Path B: Legacy Invoice payments ───────────────────────────────────
+    // Filter PaymentTargetItems directly by their own salesRepId!
+    // No longer filtered by payment.invoice.salesRepId.
+    const legacyTargetItems = await prisma.paymentTargetItem.findMany({
+      where: {
+        salesRepId: rep.id,
+        productId: { in: targetProductIds },
+        payment: {
+          paidAt: {
+            gte: startOfMonth,
+            lt: endOfMonth,
+          },
+        },
+      },
+      select: {
+        productId: true,
+        quantity: true,
+        price: true,
+      },
+    });
+
+    for (const ti of legacyTargetItems) {
+      const itemValue = ti.quantity * ti.price;
+      achievedValueByProductId.set(
+        ti.productId,
+        (achievedValueByProductId.get(ti.productId) ?? 0) + itemValue
+      );
+      legacyTargetQtyByProductId.set(
+        ti.productId,
+        (legacyTargetQtyByProductId.get(ti.productId) ?? 0) + ti.quantity
+      );
     }
   }
   // ─────────────────────────────────────────────────────────────
@@ -256,7 +264,7 @@ export default async function RepDetailPage({ params }: { params: { id: string }
               items: repMonthlyTarget.items.map(i => ({
                 productId: i.productId,
                 targetQuantity: Number(i.targetQuantity),
-                achievedQuantity: Number(i.achievedQuantity),
+                achievedQuantity: Math.max(Number(i.achievedQuantity), legacyTargetQtyByProductId.get(i.productId) ?? 0),
               })),
             } : null}
           />
@@ -272,8 +280,12 @@ export default async function RepDetailPage({ params }: { params: { id: string }
             <>
               <div className="space-y-3 flex-1">
                 {repMonthlyTarget.items.map((item) => {
+                  const displayQty = Math.max(
+                    Number(item.achievedQuantity),
+                    legacyTargetQtyByProductId.get(item.productId) ?? 0
+                  );
                   const pct = Number(item.targetQuantity) > 0
-                    ? Math.min((Number(item.achievedQuantity) / Number(item.targetQuantity)) * 100, 100)
+                    ? Math.min((displayQty / Number(item.targetQuantity)) * 100, 100)
                     : 0;
                   const color =
                     pct >= 100 ? "bg-emerald-500" :
@@ -306,7 +318,7 @@ export default async function RepDetailPage({ params }: { params: { id: string }
                           />
                         </div>
                         <span className="text-xs text-muted-foreground whitespace-nowrap tabular-nums">
-                          {Number(item.achievedQuantity).toFixed(2)} / {Number(item.targetQuantity).toFixed(2)} {item.product.unit}
+                          {displayQty.toFixed(2)} / {Number(item.targetQuantity).toFixed(2)} {item.product.unit}
                         </span>
                       </div>
                       {/* Achieved financial value badge */}
@@ -330,7 +342,7 @@ export default async function RepDetailPage({ params }: { params: { id: string }
               {/* Grand Total Footer */}
               {(() => {
                 const grandTotalQty = repMonthlyTarget.items.reduce(
-                  (sum, item) => sum + Number(item.achievedQuantity),
+                  (sum, item) => sum + Math.max(Number(item.achievedQuantity), legacyTargetQtyByProductId.get(item.productId) ?? 0),
                   0
                 );
                 const grandTotalValue = repMonthlyTarget.items.reduce(

@@ -352,7 +352,6 @@ model Pharmacy {
   id             String     @id @default(cuid())
   name           String
   ownerName      String?
-  licenseNumber  String?    @unique
   phone          String?
   address        String?
   governorateId  String
@@ -431,6 +430,7 @@ model SalesRep {
   deductions         RepDeduction[]
   dailyReports       RepDailyReport[]
   alerts             Alert[]
+  paymentTargetItems PaymentTargetItem[]
 
   @@map("sales_reps")
 }
@@ -566,7 +566,7 @@ model Invoice {
   type            InvoiceType
   status          InvoiceStatus @default(DRAFT)
   pharmacyId      String
-  salesRepId      String
+  salesRepId      String?
   invoiceDate     DateTime      @default(now())
   dueDate         DateTime? // populated for CREDIT invoices
   creditDays      Int? // snapshot of credit duration at invoice time
@@ -588,7 +588,7 @@ model Invoice {
 
   // Relations
   pharmacy Pharmacy      @relation(fields: [pharmacyId], references: [id])
-  salesRep SalesRep      @relation(fields: [salesRepId], references: [id])
+  salesRep SalesRep?     @relation(fields: [salesRepId], references: [id])
   items    InvoiceItem[]
   payments Payment[]
   returns  Return[]
@@ -670,16 +670,19 @@ model PaymentItem {
 /// LEGACY invoice. Used exclusively for sales rep target calculations.
 /// CRITICAL: These items NEVER affect inventory stock levels.
 model PaymentTargetItem {
-  id        String  @id @default(cuid())
-  paymentId String
-  productId String
-  quantity  Int
-  price     Float
+  id         String   @id @default(cuid())
+  paymentId  String
+  productId  String
+  salesRepId String
+  quantity   Int
+  price      Float
 
   // Relations
-  payment Payment @relation(fields: [paymentId], references: [id], onDelete: Cascade)
-  product Product @relation(fields: [productId], references: [id])
+  payment  Payment  @relation(fields: [paymentId], references: [id], onDelete: Cascade)
+  product  Product  @relation(fields: [productId], references: [id])
+  salesRep SalesRep @relation(fields: [salesRepId], references: [id])
 
+  @@index([salesRepId])
   @@map("payment_target_items")
 }
 

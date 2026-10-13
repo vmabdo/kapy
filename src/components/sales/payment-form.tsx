@@ -43,6 +43,7 @@ interface Props {
   invoiceItems?: InvoiceItemForPayment[];
   isLegacy?: boolean;
   allProducts?: ProductOption[];
+  salesReps?: { id: string; name: string; employeeCode: string }[];
 }
 
 // ─── Schemas ──────────────────────────────────────────────────
@@ -93,6 +94,7 @@ export function PaymentForm({
   invoiceItems = [],
   isLegacy = false,
   allProducts = [],
+  salesReps = [],
 }: Props) {
   const router = useRouter();
   const [isPending, startTransition] = useTransition();
@@ -100,6 +102,7 @@ export function PaymentForm({
   const [mode, setMode] = useState<PaymentMode>("FLAT");
   const [successMsg, setSuccessMsg] = useState<string | null>(null);
   const [includeTargetItems, setIncludeTargetItems] = useState(false);
+  const [targetSalesRepId, setTargetSalesRepId] = useState<string>("");
   const [targetItems, setTargetItems] = useState<LegacyTargetItemInput[]>([]);
 
   // ─── Flat payment form ────────────────────────────────────
@@ -138,6 +141,13 @@ export function PaymentForm({
 
   const handleFlatSubmit = (data: z.infer<typeof FlatPaymentSchema>) => {
     if (isOverFlat) return;
+    if (isLegacy && includeTargetItems) {
+      const activeTargets = targetItems.filter((ti) => ti.productId && Number(ti.quantity) > 0);
+      if (activeTargets.length > 0 && !targetSalesRepId) {
+        setServerError("يرجى اختيار المندوب المستفيد من التارجت");
+        return;
+      }
+    }
     setServerError(null);
     setSuccessMsg(null);
     startTransition(async () => {
@@ -158,12 +168,14 @@ export function PaymentForm({
         method: data.method,
         referenceNo: data.referenceNo,
         notes: data.notes,
+        targetSalesRepId: isLegacy && includeTargetItems ? targetSalesRepId : undefined,
         targetItems: activeTargets && activeTargets.length > 0 ? activeTargets : undefined,
       });
       if (result.success) {
         setSuccessMsg(result.message ?? "تم تسجيل الدفعة بنجاح");
         flatForm.reset({ invoiceId, amount: 0, method: "CASH" });
         setTargetItems([]);
+        setTargetSalesRepId("");
         setIncludeTargetItems(false);
         router.refresh();
       } else {
@@ -364,9 +376,34 @@ export function PaymentForm({
               </div>
 
               {includeTargetItems && (
-                <div className="space-y-2 mt-2">
+                <div className="space-y-3 mt-3 pt-3 border-t border-amber-200/60 dark:border-amber-900/40">
+                  <div className="space-y-1.5 bg-card/60 p-3 rounded-lg border border-amber-200/80 dark:border-amber-900/50">
+                    <label className="text-xs font-bold text-amber-950 dark:text-amber-200 flex items-center justify-between">
+                      <span className="flex items-center gap-1.5">
+                        <span>اختر المندوب المستفيد من التارجت</span>
+                        <span className="text-red-500 font-bold">*</span>
+                      </span>
+                      {salesReps.length === 0 && (
+                        <span className="text-[11px] text-red-500 font-normal">لا يوجد مناديب متاحين</span>
+                      )}
+                    </label>
+                    <select
+                      value={targetSalesRepId}
+                      onChange={(e) => setTargetSalesRepId(e.target.value)}
+                      className="w-full px-3 py-2 rounded-lg border border-amber-300 dark:border-amber-700 bg-background text-xs font-medium focus:outline-none focus:ring-2 focus:ring-amber-500"
+                      required
+                    >
+                      <option value="">-- اختر المندوب المستفيد من التارجت --</option>
+                      {salesReps.map((r) => (
+                        <option key={r.id} value={r.id}>
+                          {r.name} ({r.employeeCode})
+                        </option>
+                      ))}
+                    </select>
+                  </div>
+
                   <p className="text-[11px] text-amber-700/80 dark:text-amber-500/80">
-                    هذه الأصناف تُستخدم حصرياً لحساب نسبة تحقيق مستهدف المندوب الشهري لهذا السداد ولا تؤثر إطلاقاً على المخزون.
+                    هذه الأصناف تُستخدم حصرياً لحساب نسبة تحقيق مستهدف المندوب المحدد لهذا السداد ولا تؤثر إطلاقاً على المخزون.
                   </p>
                   {targetItems.map((ti, idx) => (
                     <div

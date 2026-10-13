@@ -11,7 +11,6 @@ import { Building2, Loader2 } from "lucide-react";
 interface PharmacyData {
   id: string;
   name: string;
-  licenseNumber?: string | null;
   address?: string | null;
   phone?: string | null;
   governorateId: string;
@@ -28,8 +27,6 @@ interface Props {
 
 const CreateSchema = z.object({
   name: z.string().min(2, "اسم الصيدلية مطلوب"),
-  licenseNumber: z.string().optional(),
-  taxNumber: z.string().optional(),
   address: z.string().optional(),
   phone: z.string().optional(),
   governorateId: z.string().min(1, "اختر المحافظة"),
@@ -40,7 +37,6 @@ const CreateSchema = z.object({
 
 const UpdateSchema = z.object({
   name: z.string().min(2, "اسم الصيدلية مطلوب"),
-  licenseNumber: z.string().optional(),
   address: z.string().optional(),
   phone: z.string().optional(),
   governorateId: z.string().min(1, "اختر المحافظة"),
@@ -72,7 +68,6 @@ export function PharmacyForm({ governorates, salesReps, pharmacy }: Props) {
     defaultValues: pharmacy
       ? {
           name: pharmacy.name,
-          licenseNumber: pharmacy.licenseNumber ?? "",
           address: pharmacy.address ?? "",
           phone: pharmacy.phone ?? "",
           governorateId: pharmacy.governorateId,
@@ -144,11 +139,6 @@ export function PharmacyForm({ governorates, salesReps, pharmacy }: Props) {
             <div className="space-y-1.5 md:col-span-2">
               <label className="text-sm font-medium">العنوان التفصيلي</label>
               <input {...register("address")} className={inputClass} />
-            </div>
-
-            <div className="space-y-1.5">
-              <label className="text-sm font-medium">رقم الترخيص</label>
-              <input {...register("licenseNumber")} className={inputClass} />
             </div>
 
             <div className="flex items-center gap-3 pt-6">
@@ -253,22 +243,6 @@ export function PharmacyForm({ governorates, salesReps, pharmacy }: Props) {
             <label className="text-sm font-medium">الهدف الشهري المبدئي (ج.م)</label>
             <input type="number" {...register("targetAmount")} className={inputClass} />
             {errors.targetAmount && <p className="text-red-500 text-xs">{errors.targetAmount.message}</p>}
-          </div>
-        </div>
-      </div>
-
-      {/* Legal Info */}
-      <div className="bg-card border border-border rounded-xl p-5">
-        <h2 className="font-semibold text-sm mb-4">البيانات القانونية (اختياري)</h2>
-        <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-          <div className="space-y-1.5">
-            <label className="text-sm font-medium">رقم الترخيص</label>
-            <input {...register("licenseNumber")} className={inputClass} />
-          </div>
-
-          <div className="space-y-1.5">
-            <label className="text-sm font-medium">الرقم الضريبي</label>
-            <input {...register("taxNumber")} className={inputClass} />
           </div>
         </div>
       </div>
