@@ -1,6 +1,6 @@
 import type { Metadata } from "next";
 import Link from "next/link";
-import { BarChart3, CalendarDays, CalendarRange, TrendingUp, AlertTriangle } from "lucide-react";
+import { BarChart3, CalendarDays, CalendarRange, TrendingUp, AlertTriangle, Wallet } from "lucide-react";
 
 export const metadata: Metadata = { title: "التقارير والإحصائيات" };
 
@@ -13,7 +13,7 @@ export default function ReportsHubPage() {
             <BarChart3 className="w-6 h-6 text-primary" />
             مركز التقارير والإحصائيات
           </h1>
-          <p className="page-subtitle">تقارير شاملة للمبيعات، التحصيلات، والمخزون</p>
+          <p className="page-subtitle">تقارير شاملة للمبيعات، التحصيلات، المديونيات، والمخزون</p>
         </div>
       </div>
 
@@ -57,6 +57,20 @@ export default function ReportsHubPage() {
             <h2 className="text-lg font-bold mb-2">أداء فريق المبيعات</h2>
             <p className="text-sm text-muted-foreground">
               متابعة مبيعات المناديب، عدد الصيدليات التابعة لكل مندوب، والعهد المصروفة لهم.
+            </p>
+          </div>
+        </Link>
+
+        {/* Debts Report */}
+        <Link href="/dashboard/reports/debts" className="group block bg-card border border-border hover:border-primary/40 rounded-xl overflow-hidden transition-all hover:shadow-md">
+          <div className="h-3 bg-red-500" />
+          <div className="p-6">
+            <div className="w-12 h-12 rounded-xl bg-red-100 text-red-600 dark:bg-red-900/30 dark:text-red-400 flex items-center justify-center mb-4 group-hover:scale-110 transition-transform">
+              <Wallet className="w-6 h-6" />
+            </div>
+            <h2 className="text-lg font-bold mb-2">مديونيات الصيدليات والشركات</h2>
+            <p className="text-sm text-muted-foreground">
+              تقرير شامل بالمستحقات المفتوحة من الفواتير الآجلة والمديونيات السابقة، مع الفلترة حسب المحافظة ونوع العميل.
             </p>
           </div>
         </Link>
