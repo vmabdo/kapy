@@ -112,6 +112,19 @@ export async function getLowStockItems() {
   return items.filter((item) => Number(item.quantity) <= item.product.reorderLevel);
 }
 
+/** Lightweight balances used by inventory operation forms. */
+export async function getStockLevels() {
+  return prisma.stockItem.findMany({
+    select: {
+      warehouseId: true,
+      productId: true,
+      quantity: true,
+      reservedQty: true,
+    },
+    orderBy: [{ warehouseId: "asc" }, { productId: "asc" }],
+  });
+}
+
 // ─── Stock Movements ──────────────────────────────────────────
 
 export async function getStockMovements(filters?: {
@@ -144,7 +157,17 @@ export async function getStockMovements(filters?: {
       supplier: { select: { name: true } },
       salesRep: { select: { name: true } },
       items: {
-        include: { product: { select: { name: true, sku: true, unit: true } } },
+        include: {
+          product: {
+            select: {
+              name: true,
+              sku: true,
+              unit: true,
+              costPrice: true,
+              sellingPrice: true,
+            },
+          },
+        },
       },
     },
     orderBy: { movedAt: "desc" },

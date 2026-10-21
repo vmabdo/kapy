@@ -1,6 +1,6 @@
 import type { Metadata } from "next";
 import Link from "next/link";
-import { BarChart3, CalendarDays, CalendarRange, TrendingUp, AlertTriangle, Wallet } from "lucide-react";
+import { BarChart3, CalendarDays, CalendarRange, TrendingUp, AlertTriangle, Wallet, Package } from "lucide-react";
 
 export const metadata: Metadata = { title: "التقارير والإحصائيات" };
 
@@ -71,6 +71,21 @@ export default function ReportsHubPage() {
             <h2 className="text-lg font-bold mb-2">مديونيات الصيدليات والشركات</h2>
             <p className="text-sm text-muted-foreground">
               تقرير شامل بالمستحقات المفتوحة من الفواتير الآجلة والمديونيات السابقة، مع الفلترة حسب المحافظة ونوع العميل.
+            </p>
+          </div>
+        </Link>
+
+        {/* Inventory Financials */}
+        <Link href="/dashboard/financial-statements?tab=balance" className="group block bg-card border border-border hover:border-primary/40 rounded-xl overflow-hidden transition-all hover:shadow-md">
+          <div className="h-3 bg-teal-500" />
+          <div className="p-6">
+            <div className="w-12 h-12 rounded-xl bg-teal-100 text-teal-600 dark:bg-teal-900/30 dark:text-teal-400 flex items-center justify-center mb-4 group-hover:scale-110 transition-transform">
+              <Package className="w-6 h-6" />
+            </div>
+            <h2 className="text-lg font-bold mb-2">تقييم المخزون والرصيد الافتتاحي</h2>
+            <p className="text-sm text-muted-foreground">
+              قيمة المخزون الحالي، رأس المال المخزني الافتتاحي، وتأثير فروق الجرد
+              والعينات والدعاية المجانية على الميزانية وقائمة الدخل.
             </p>
           </div>
         </Link>

@@ -10,6 +10,7 @@ import {
   StockMovementSource,
   UserRole,
 } from "@prisma/client";
+import { resolveProductCost } from "@/lib/costing";
 import { z } from "zod";
 
 // ─── Supplier Schema ────────────────────────────────────────────
@@ -51,22 +52,179 @@ const CreateCategorySchema = z.object({
 const StockMovementItemSchema = z.object({
   productId: z.string().min(1),
   quantity: z.coerce.number().positive("الكمية يجب أن تكون موجبة"),
-  unitCost: z.coerce.number().min(0).optional(),
+  // Keep an empty input as "not provided" so the product cost can be used.
+  unitCost: z.preprocess(
+    (value) =>
+      value === "" || value === null || value === undefined
+        ? undefined
+        : Number(value),
+    z.number().min(0, "التكلفة لا يمكن أن تكون سالبة").optional()
+  ),
   expiryDate: z.string().optional(),
   batchNumber: z.string().optional(),
 });
 
-const CreateStockMovementSchema = z.object({
-  movementType: z.nativeEnum(StockMovementType),
-  source: z.nativeEnum(StockMovementSource),
-  sourceWarehouseId: z.string().optional(),
-  targetWarehouseId: z.string().optional(),
-  supplierId: z.string().optional(),
-  salesRepId: z.string().optional(),
-  referenceNumber: z.string().optional(),
-  notes: z.string().optional(),
-  items: z.array(StockMovementItemSchema).min(1, "يجب إضافة منتج واحد على الأقل"),
+/**
+ * Only these two operational movements are still created from the generic
+ * stock-movement form. Rep dispatch/returns and the old generic adjustment
+ * have been retired; opening balances and count corrections have dedicated
+ * actions below.
+ */
+const ALLOWED_STOCK_MOVEMENT_TYPES = [
+  StockMovementType.INBOUND,
+  StockMovementType.OUTBOUND,
+] as const;
+
+const ALLOWED_STOCK_MOVEMENT_SOURCES = [
+  StockMovementSource.SUPPLIER,
+  StockMovementSource.WAREHOUSE,
+] as const;
+
+const CreateStockMovementSchema = z
+  .object({
+    movementType: z.enum(ALLOWED_STOCK_MOVEMENT_TYPES),
+    source: z.enum(ALLOWED_STOCK_MOVEMENT_SOURCES),
+    sourceWarehouseId: z.string().optional(),
+    targetWarehouseId: z.string().optional(),
+    supplierId: z.string().optional(),
+    referenceNumber: z.string().optional(),
+    notes: z.string().optional(),
+    items: z.array(StockMovementItemSchema).min(1, "يجب إضافة منتج واحد على الأقل"),
+  })
+  .superRefine((data, ctx) => {
+    if (data.movementType === StockMovementType.INBOUND) {
+      if (data.source !== StockMovementSource.SUPPLIER) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: ["source"],
+          message: "حركة الوارد يجب أن تكون من مورد فقط",
+        });
+      }
+      if (!data.targetWarehouseId) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: ["targetWarehouseId"],
+          message: "اختر المخزن المستلم",
+        });
+      }
+    }
+
+    if (data.movementType === StockMovementType.OUTBOUND) {
+      if (data.source !== StockMovementSource.WAREHOUSE) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: ["source"],
+          message: "حركة الصادر المتاحة هي التحويل بين المخازن فقط",
+        });
+      }
+      if (!data.sourceWarehouseId) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: ["sourceWarehouseId"],
+          message: "اختر المخزن المصدر",
+        });
+      }
+      if (!data.targetWarehouseId) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: ["targetWarehouseId"],
+          message: "اختر المخزن الوجهة",
+        });
+      }
+      if (
+        data.sourceWarehouseId &&
+        data.targetWarehouseId &&
+        data.sourceWarehouseId === data.targetWarehouseId
+      ) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: ["targetWarehouseId"],
+          message: "لا يمكن التحويل إلى نفس المخزن",
+        });
+      }
+    }
+  });
+
+// ─── Opening Stock Balance ────────────────────────────────────
+
+const OpeningBalanceItemSchema = z.object({
+  productId: z.string().min(1, "اختر منتجاً"),
+  quantity: z.coerce.number().positive("الكمية يجب أن تكون أكبر من صفر"),
+  unitCost: z.preprocess(
+    (value) =>
+      value === "" || value === null || value === undefined
+        ? undefined
+        : Number(value),
+    z
+      .number({
+        required_error: "تكلفة الوحدة مطلوبة",
+        invalid_type_error: "تكلفة الوحدة غير صالحة",
+      })
+      .min(0, "التكلفة لا يمكن أن تكون سالبة")
+  ),
 });
+
+const OpeningBalanceSchema = z
+  .object({
+    warehouseId: z.string().min(1, "اختر المخزن"),
+    notes: z.string().trim().optional(),
+    items: z
+      .array(OpeningBalanceItemSchema)
+      .min(1, "أضف منتجاً واحداً على الأقل"),
+  })
+  .superRefine((data, ctx) => {
+    const seen = new Set<string>();
+    data.items.forEach((item, index) => {
+      if (seen.has(item.productId)) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: ["items", index, "productId"],
+          message: "لا يمكن تكرار نفس المنتج في نفس الرصيد الافتتاحي",
+        });
+      }
+      seen.add(item.productId);
+    });
+  });
+
+// ─── Stock Count Correction (shortage / surplus) ─────────────
+
+const StockCountCorrectionSchema = z.object({
+  direction: z.enum(["SHORTAGE", "SURPLUS"]),
+  warehouseId: z.string().min(1, "اختر المخزن"),
+  productId: z.string().min(1, "اختر المنتج"),
+  quantity: z.coerce.number().positive("كمية الفرق يجب أن تكون أكبر من صفر"),
+  reason: z.string().trim().min(2, "يرجى إدخال سبب التصحيح"),
+});
+
+// ─── Samples / Promotional Dispatch ───────────────────────────
+
+const DispatchSamplesSchema = z
+  .object({
+    warehouseId: z.string().min(1, "اختر المخزن"),
+    salesRepId: z.string().min(1, "اختر المندوب"),
+    notes: z.string().trim().max(500, "الملاحظات طويلة جداً").optional(),
+    items: z
+      .array(
+        z.object({
+          productId: z.string().min(1, "اختر منتجاً"),
+          quantity: z.coerce.number().positive("الكمية يجب أن تكون أكبر من صفر"),
+        })
+      )
+      .min(1, "أضف منتجاً واحداً على الأقل"),
+  })
+  .superRefine((data, ctx) => {
+    const seen = new Set<string>();
+    data.items.forEach((item, index) => {
+      if (seen.has(item.productId)) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: ["items", index, "productId"],
+          message: "لا يمكن تكرار نفس المنتج في نفس عملية الصرف",
+        });
+      }
+      seen.add(item.productId);
+    });
+  });
 
 // ─── Result Types ──────────────────────────────────────────────
 
@@ -233,71 +391,145 @@ export async function createStockMovement(
 
     const data = CreateStockMovementSchema.parse(formData);
 
-    // ── Business rule enforcement ──────────────────────────
-    // Rule 1: Only MAIN warehouse can receive from supplier
-    if (data.source === StockMovementSource.SUPPLIER && data.targetWarehouseId) {
-      const targetWh = await prisma.warehouse.findUniqueOrThrow({
-        where: { id: data.targetWarehouseId },
-      });
-      if (targetWh.type !== WarehouseType.MAIN) {
+    // ── Warehouse validation ───────────────────────────────
+    const targetWarehouse = data.targetWarehouseId
+      ? await prisma.warehouse.findUnique({
+          where: { id: data.targetWarehouseId },
+          select: { id: true, name: true, type: true, isActive: true },
+        })
+      : null;
+
+    if (!targetWarehouse || !targetWarehouse.isActive) {
+      return { success: false, error: "المخزن الوجهة غير موجود أو غير مفعّل" };
+    }
+
+    if (
+      data.movementType === StockMovementType.INBOUND &&
+      targetWarehouse.type !== WarehouseType.MAIN
+    ) {
+      return {
+        success: false,
+        error:
+          "المخازن الفرعية لا يمكنها الاستلام مباشرة من الموردين. يجب أن يتم الاستلام في المخزن الرئيسي أولاً.",
+      };
+    }
+
+    const sourceWarehouse = data.sourceWarehouseId
+      ? await prisma.warehouse.findUnique({
+          where: { id: data.sourceWarehouseId },
+          select: { id: true, name: true, type: true, isActive: true },
+        })
+      : null;
+
+    if (data.movementType === StockMovementType.OUTBOUND) {
+      if (!sourceWarehouse || !sourceWarehouse.isActive) {
+        return { success: false, error: "المخزن المصدر غير موجود أو غير مفعّل" };
+      }
+      if (
+        targetWarehouse.type === WarehouseType.SUB &&
+        sourceWarehouse.type !== WarehouseType.MAIN
+      ) {
         return {
           success: false,
-          error: "المخازن الفرعية لا يمكنها الاستلام مباشرة من الموردين. يجب أن يتم الاستلام في المخزن الرئيسي أولاً.",
+          error:
+            "المخازن الفرعية لا يمكنها استقبال تحويلات من مخازن فرعية أخرى. يجب أن يكون المصدر المخزن الرئيسي.",
         };
       }
     }
 
-    // Rule 2: Sub-warehouse can only receive transfers FROM the main warehouse
-    if (data.source === StockMovementSource.WAREHOUSE && data.targetWarehouseId) {
-      const targetWh = await prisma.warehouse.findUniqueOrThrow({
-        where: { id: data.targetWarehouseId },
-      });
-      if (targetWh.type === WarehouseType.SUB && data.sourceWarehouseId) {
-        const sourceWh = await prisma.warehouse.findUniqueOrThrow({
-          where: { id: data.sourceWarehouseId },
-        });
-        if (sourceWh.type !== WarehouseType.MAIN) {
-          return {
-            success: false,
-            error: "المخازن الفرعية لا يمكنها استقبال تحويلات من مخازن فرعية أخرى. يجب أن يكون المصدر المخزن الرئيسي.",
-          };
-        }
+    // ── Product / cost validation ──────────────────────────
+    const productIds = Array.from(
+      new Set(data.items.map((item) => item.productId))
+    );
+    const products = await prisma.product.findMany({
+      where: { id: { in: productIds } },
+      select: {
+        id: true,
+        name: true,
+        isActive: true,
+        costPrice: true,
+        sellingPrice: true,
+      },
+    });
+    const productMap = new Map(products.map((product) => [product.id, product]));
+
+    for (const productId of productIds) {
+      const product = productMap.get(productId);
+      if (!product) {
+        return { success: false, error: "أحد المنتجات المختارة غير موجود" };
+      }
+      if (!product.isActive) {
+        return {
+          success: false,
+          error: `المنتج "${product.name}" غير مفعّل ولا يمكن تسجيل حركة عليه`,
+        };
       }
     }
 
-    // Rule 3: Sufficient stock check for OUTBOUND movements
-    if (
-      data.movementType === StockMovementType.OUTBOUND ||
-      data.movementType === StockMovementType.RETURN_OUTBOUND
-    ) {
-      const sourceId = data.sourceWarehouseId;
-      if (sourceId) {
-        const productIds = data.items.map(i => i.productId);
-        const stockItems = await prisma.stockItem.findMany({
-          where: { warehouseId: sourceId, productId: { in: productIds } },
-          include: { product: { select: { name: true } } }
-        });
-        const stockItemMap = new Map(stockItems.map(si => [si.productId, si]));
+    const normalizedItems = data.items.map((item) => {
+      const product = productMap.get(item.productId)!;
+      const quantity = Number(item.quantity);
+      // Supplier receipts may use the cost entered on the document. Internal
+      // transfers are valued at the product's current cost.
+      const unitCost =
+        data.movementType === StockMovementType.INBOUND &&
+        item.unitCost !== undefined
+          ? Number(item.unitCost)
+          : resolveProductCost(product);
 
-        for (const item of data.items) {
-          const stockItem = stockItemMap.get(item.productId);
-          const available = (Number(stockItem?.quantity ?? 0)) - (Number(stockItem?.reservedQty ?? 0));
-          if (available < item.quantity) {
-            const productName = stockItem?.product?.name ?? item.productId;
-            return {
-              success: false,
-              error: `المخزون غير كافٍ للمنتج "${productName}". المتاح: ${available}، المطلوب: ${item.quantity}`,
-            };
-          }
+      return {
+        ...item,
+        quantity,
+        unitCost,
+        lineTotal: quantity * unitCost,
+      };
+    });
+    const totalCost = normalizedItems.reduce(
+      (sum, item) => sum + item.lineTotal,
+      0
+    );
+
+    // ── Available stock check for transfers ────────────────
+    if (
+      data.movementType === StockMovementType.OUTBOUND &&
+      sourceWarehouse
+    ) {
+      const stockItems = await prisma.stockItem.findMany({
+        where: {
+          warehouseId: sourceWarehouse.id,
+          productId: { in: productIds },
+        },
+        select: {
+          productId: true,
+          quantity: true,
+          reservedQty: true,
+          product: { select: { name: true } },
+        },
+      });
+      const stockItemMap = new Map(
+        stockItems.map((stockItem) => [stockItem.productId, stockItem])
+      );
+
+      for (const item of normalizedItems) {
+        const stockItem = stockItemMap.get(item.productId);
+        const available =
+          Number(stockItem?.quantity ?? 0) - Number(stockItem?.reservedQty ?? 0);
+
+        if (available < item.quantity) {
+          const productName =
+            stockItem?.product?.name ??
+            productMap.get(item.productId)?.name ??
+            item.productId;
+          return {
+            success: false,
+            error: `المخزون غير كافٍ للمنتج "${productName}". المتاح: ${available}، المطلوب: ${item.quantity}`,
+          };
         }
       }
     }
 
     // ── Atomic transaction ─────────────────────────────────
     const result = await prisma.$transaction(async (tx) => {
-      // 1. Create the movement record
-      // BUG FIX: Only pass supplierId when source is actually SUPPLIER.
-      // Passing an empty string or stale value causes a FK constraint violation.
       const supplierId =
         data.source === StockMovementSource.SUPPLIER
           ? data.supplierId || null
@@ -307,17 +539,20 @@ export async function createStockMovement(
         data: {
           movementType: data.movementType,
           source: data.source,
-          sourceWarehouseId: data.sourceWarehouseId || null,
-          targetWarehouseId: data.targetWarehouseId || null,
+          sourceWarehouseId:
+            data.movementType === StockMovementType.OUTBOUND
+              ? sourceWarehouse?.id ?? null
+              : null,
+          targetWarehouseId: targetWarehouse.id,
           supplierId,
-          salesRepId: data.salesRepId || null,
           referenceNumber: data.referenceNumber || null,
           notes: data.notes || null,
+          totalCost,
           items: {
-            create: data.items.map((item) => ({
+            create: normalizedItems.map((item) => ({
               productId: item.productId,
               quantity: item.quantity,
-              unitCost: item.unitCost ?? null,
+              unitCost: item.unitCost,
               expiryDate: item.expiryDate ? new Date(item.expiryDate) : undefined,
               batchNumber: item.batchNumber || null,
             })),
@@ -325,105 +560,66 @@ export async function createStockMovement(
         },
       });
 
-      // 2. Update stock balances (upsert StockItem for each product)
-      const isInbound =
-        data.movementType === StockMovementType.INBOUND ||
-        data.movementType === StockMovementType.RETURN_INBOUND;
-      const isOutbound =
-        data.movementType === StockMovementType.OUTBOUND ||
-        data.movementType === StockMovementType.RETURN_OUTBOUND;
-
-      for (const item of data.items) {
-        // ── Determine movement direction ─────────────────────
-        // Internal transfer (warehouse-to-warehouse): OUTBOUND at source + INBOUND at target
-        const isInternalTransfer =
-          data.source === StockMovementSource.WAREHOUSE &&
+      for (const item of normalizedItems) {
+        // Warehouse-to-warehouse transfer: decrement source first.
+        if (
           data.movementType === StockMovementType.OUTBOUND &&
-          !!data.sourceWarehouseId &&
-          !!data.targetWarehouseId;
-
-        // Standard inbound (supplier receipt, rep return)
-        const isInbound =
-          (data.movementType === StockMovementType.INBOUND ||
-           data.movementType === StockMovementType.RETURN_INBOUND) &&
-          !isInternalTransfer;
-
-        // Standard outbound (issue to rep) — NOT internal transfer
-        const isOutbound =
-          (data.movementType === StockMovementType.OUTBOUND ||
-           data.movementType === StockMovementType.RETURN_OUTBOUND) &&
-          !isInternalTransfer;
-
-        // ── Source warehouse: always decrement for transfers & outbound ──
-        if ((isInternalTransfer || isOutbound) && data.sourceWarehouseId) {
-          await tx.stockItem.upsert({
+          sourceWarehouse
+        ) {
+          await tx.stockItem.update({
             where: {
               warehouseId_productId: {
-                warehouseId: data.sourceWarehouseId,
+                warehouseId: sourceWarehouse.id,
                 productId: item.productId,
               },
             },
-            update: { quantity: { decrement: item.quantity } },
-            create: {
-              warehouseId: data.sourceWarehouseId,
-              productId: item.productId,
-              quantity: -item.quantity,
-            },
+            data: { quantity: { decrement: item.quantity } },
           });
         }
 
-        // ── Target warehouse: always increment for transfers & inbound ──
-        if ((isInternalTransfer || isInbound) && data.targetWarehouseId) {
-          await tx.stockItem.upsert({
-            where: {
-              warehouseId_productId: {
-                warehouseId: data.targetWarehouseId,
-                productId: item.productId,
-              },
-            },
-            update: { quantity: { increment: item.quantity } },
-            create: {
-              warehouseId: data.targetWarehouseId,
+        // Supplier receipt or transfer destination: increment target.
+        await tx.stockItem.upsert({
+          where: {
+            warehouseId_productId: {
+              warehouseId: targetWarehouse.id,
               productId: item.productId,
-              quantity: item.quantity,
             },
-          });
-        }
-
-        // ── ADJUSTMENT — direct delta on target or source ────
-        if (data.movementType === StockMovementType.ADJUSTMENT) {
-          const whId = data.targetWarehouseId ?? data.sourceWarehouseId;
-          if (whId) {
-            await tx.stockItem.upsert({
-              where: { warehouseId_productId: { warehouseId: whId, productId: item.productId } },
-              update: { quantity: { increment: item.quantity } },
-              create: { warehouseId: whId, productId: item.productId, quantity: item.quantity },
-            });
-          }
-        }
+          },
+          update: { quantity: { increment: item.quantity } },
+          create: {
+            warehouseId: targetWarehouse.id,
+            productId: item.productId,
+            quantity: item.quantity,
+          },
+        });
       }
 
-      // 3. Check for low stock alerts (fires for any movement that reduces source stock)
-      const sourceReduces =
-        data.movementType === StockMovementType.OUTBOUND ||
-        data.movementType === StockMovementType.RETURN_OUTBOUND;
-      if (sourceReduces && data.sourceWarehouseId) {
-        const productIds = data.items.map(i => i.productId);
+      // Low-stock notifications only for movements that reduce a warehouse.
+      if (
+        data.movementType === StockMovementType.OUTBOUND &&
+        sourceWarehouse
+      ) {
         const stockItems = await tx.stockItem.findMany({
-          where: { warehouseId: data.sourceWarehouseId!, productId: { in: productIds } },
-          include: { product: { select: { name: true, reorderLevel: true } } },
+          where: {
+            warehouseId: sourceWarehouse.id,
+            productId: { in: productIds },
+          },
+          include: {
+            product: { select: { name: true, reorderLevel: true } },
+          },
         });
 
-        const alertsToCreate = [];
-        for (const stockItem of stockItems) {
-          if (Number(stockItem.quantity) <= stockItem.product.reorderLevel) {
-            alertsToCreate.push({
-              type: "LOW_STOCK" as const,
-              title: "تنبيه: مخزون منخفض",
-              message: `المنتج "${stockItem.product.name}" وصل إلى مستوى إعادة الطلب (${stockItem.quantity} وحدة متبقية)`,
-            });
-          }
-        }
+        const alertsToCreate = stockItems
+          .filter(
+            (stockItem) =>
+              Number(stockItem.quantity) <= stockItem.product.reorderLevel
+          )
+          .map((stockItem) => ({
+            type: "LOW_STOCK" as const,
+            title: "تنبيه: مخزون منخفض",
+            message: `المنتج "${stockItem.product.name}" وصل إلى مستوى إعادة الطلب (${stockItem.quantity} وحدة متبقية)`,
+          }));
+
         if (alertsToCreate.length > 0) {
           await tx.alert.createMany({ data: alertsToCreate });
         }
@@ -433,7 +629,528 @@ export async function createStockMovement(
     });
 
     revalidatePath("/dashboard/inventory");
-    return { success: true, data: { id: result.id }, message: "تمت حركة المخزون بنجاح" };
+    revalidatePath("/dashboard/inventory/movements");
+    revalidatePath("/dashboard/financial-statements");
+    revalidatePath("/dashboard/reports");
+    if (sourceWarehouse) {
+      revalidatePath(`/dashboard/inventory/warehouses/${sourceWarehouse.id}`);
+    }
+    revalidatePath(`/dashboard/inventory/warehouses/${targetWarehouse.id}`);
+
+    return {
+      success: true,
+      data: { id: result.id },
+      message: "تمت حركة المخزون بنجاح",
+    };
+  } catch (e: unknown) {
+    return { success: false, error: handleActionError(e) };
+  }
+}
+
+// ─── Opening Stock Balance Action ──────────────────────────────
+
+/**
+ * Records the physical stock a warehouse starts with.
+ *
+ * Financial treatment: increases inventory (asset) and opening inventory
+ * capital. It deliberately creates NO treasury transaction and NO supplier
+ * payable.
+ */
+export async function createOpeningStockBalance(
+  formData: z.infer<typeof OpeningBalanceSchema>
+): Promise<ActionResult<{ id: string }>> {
+  try {
+    await requireRole([
+      UserRole.SUPER_ADMIN,
+      UserRole.ADMIN,
+      UserRole.WAREHOUSE_MANAGER,
+    ]);
+
+    const data = OpeningBalanceSchema.parse(formData);
+
+    const warehouse = await prisma.warehouse.findUnique({
+      where: { id: data.warehouseId },
+      select: { id: true, name: true, isActive: true },
+    });
+    if (!warehouse || !warehouse.isActive) {
+      return { success: false, error: "المخزن غير موجود أو غير مفعّل" };
+    }
+
+    const productIds = Array.from(
+      new Set(data.items.map((item) => item.productId))
+    );
+    const products = await prisma.product.findMany({
+      where: { id: { in: productIds } },
+      select: { id: true, name: true, isActive: true },
+    });
+    const productMap = new Map(products.map((product) => [product.id, product]));
+
+    for (const productId of productIds) {
+      const product = productMap.get(productId);
+      if (!product) {
+        return { success: false, error: "أحد المنتجات المختارة غير موجود" };
+      }
+      if (!product.isActive) {
+        return {
+          success: false,
+          error: `المنتج "${product.name}" غير مفعّل ولا يمكن إدخال رصيد افتتاحي له`,
+        };
+      }
+    }
+
+    const normalizedItems = data.items.map((item) => ({
+      ...item,
+      quantity: Number(item.quantity),
+      unitCost: Number(item.unitCost),
+      lineTotal: Number(item.quantity) * Number(item.unitCost),
+    }));
+    const totalCost = normalizedItems.reduce(
+      (sum, item) => sum + item.lineTotal,
+      0
+    );
+
+    const result = await prisma.$transaction(async (tx) => {
+      const openingCount = await tx.stockMovement.count({
+        where: { movementType: StockMovementType.OPENING_BALANCE },
+      });
+      const referenceNumber = `OPB-${new Date().getFullYear()}-${String(
+        openingCount + 1
+      ).padStart(4, "0")}`;
+
+      const movement = await tx.stockMovement.create({
+        data: {
+          movementType: StockMovementType.OPENING_BALANCE,
+          source: StockMovementSource.WAREHOUSE,
+          targetWarehouseId: warehouse.id,
+          referenceNumber,
+          notes: data.notes || "رصيد افتتاحي للمخزن",
+          totalCost,
+          items: {
+            create: normalizedItems.map((item) => ({
+              productId: item.productId,
+              quantity: item.quantity,
+              unitCost: item.unitCost,
+            })),
+          },
+        },
+      });
+
+      for (const item of normalizedItems) {
+        await tx.stockItem.upsert({
+          where: {
+            warehouseId_productId: {
+              warehouseId: warehouse.id,
+              productId: item.productId,
+            },
+          },
+          update: { quantity: { increment: item.quantity } },
+          create: {
+            warehouseId: warehouse.id,
+            productId: item.productId,
+            quantity: item.quantity,
+          },
+        });
+
+        // Keep the product's cost in sync with the cost used to value the
+        // opening stock. Without this the balance-sheet valuation would use a
+        // different unit cost than the opening-capital report.
+        if (item.unitCost > 0) {
+          await tx.product.update({
+            where: { id: item.productId },
+            data: { costPrice: item.unitCost },
+          });
+        }
+      }
+
+      return movement;
+    });
+
+    revalidatePath("/dashboard/inventory");
+    revalidatePath("/dashboard/inventory/movements");
+    revalidatePath(`/dashboard/inventory/warehouses/${warehouse.id}`);
+    revalidatePath("/dashboard/financial-statements");
+    revalidatePath("/dashboard/reports");
+
+    return {
+      success: true,
+      data: { id: result.id },
+      message: "تم إدخال الرصيد الافتتاحي للمخزن بنجاح",
+    };
+  } catch (e: unknown) {
+    return { success: false, error: handleActionError(e) };
+  }
+}
+
+// ─── Stock Count Correction Action ─────────────────────────────
+
+/**
+ * Records a physical-count shortage or surplus.
+ *
+ * Financial treatment: shortage is an inventory loss (expense), surplus is an
+ * inventory gain. Neither movement touches treasury cash or supplier debt.
+ */
+export async function createStockCountCorrection(
+  formData: z.infer<typeof StockCountCorrectionSchema>
+): Promise<ActionResult<{ id: string }>> {
+  try {
+    await requireRole([
+      UserRole.SUPER_ADMIN,
+      UserRole.ADMIN,
+      UserRole.WAREHOUSE_MANAGER,
+    ]);
+
+    const data = StockCountCorrectionSchema.parse(formData);
+
+    const [warehouse, product, stockItem] = await Promise.all([
+      prisma.warehouse.findUnique({
+        where: { id: data.warehouseId },
+        select: { id: true, name: true, isActive: true },
+      }),
+      prisma.product.findUnique({
+        where: { id: data.productId },
+        select: {
+          id: true,
+          name: true,
+          isActive: true,
+          costPrice: true,
+          sellingPrice: true,
+          reorderLevel: true,
+        },
+      }),
+      prisma.stockItem.findUnique({
+        where: {
+          warehouseId_productId: {
+            warehouseId: data.warehouseId,
+            productId: data.productId,
+          },
+        },
+        select: { quantity: true },
+      }),
+    ]);
+
+    if (!warehouse || !warehouse.isActive) {
+      return { success: false, error: "المخزن غير موجود أو غير مفعّل" };
+    }
+    if (!product || !product.isActive) {
+      return { success: false, error: "المنتج غير موجود أو غير مفعّل" };
+    }
+
+    const currentQuantity = Number(stockItem?.quantity ?? 0);
+    const quantity = Number(data.quantity);
+
+    if (data.direction === "SHORTAGE" && quantity > currentQuantity) {
+      return {
+        success: false,
+        error: `لا يمكن تسجيل نقص أكبر من الرصيد الحالي. الرصيد الحالي: ${currentQuantity}`,
+      };
+    }
+
+    const unitCost = resolveProductCost(product);
+    const totalCost = quantity * unitCost;
+    const isShortage = data.direction === "SHORTAGE";
+    const movementType = isShortage
+      ? StockMovementType.ADJUSTMENT_OUT
+      : StockMovementType.ADJUSTMENT_IN;
+
+    const result = await prisma.$transaction(async (tx) => {
+      const movementCount = await tx.stockMovement.count({
+        where: { movementType },
+      });
+      const referenceNumber = `${isShortage ? "SHR" : "SRP"}-${new Date().getFullYear()}-${String(
+        movementCount + 1
+      ).padStart(4, "0")}`;
+
+      const movement = await tx.stockMovement.create({
+        data: {
+          movementType,
+          source: StockMovementSource.WAREHOUSE,
+          sourceWarehouseId: isShortage ? warehouse.id : null,
+          targetWarehouseId: isShortage ? null : warehouse.id,
+          referenceNumber,
+          notes: data.reason,
+          totalCost,
+          items: {
+            create: {
+              productId: product.id,
+              quantity,
+              unitCost,
+            },
+          },
+        },
+      });
+
+      if (isShortage) {
+        await tx.stockItem.update({
+          where: {
+            warehouseId_productId: {
+              warehouseId: warehouse.id,
+              productId: product.id,
+            },
+          },
+          data: { quantity: { decrement: quantity } },
+        });
+      } else {
+        await tx.stockItem.upsert({
+          where: {
+            warehouseId_productId: {
+              warehouseId: warehouse.id,
+              productId: product.id,
+            },
+          },
+          update: { quantity: { increment: quantity } },
+          create: {
+            warehouseId: warehouse.id,
+            productId: product.id,
+            quantity,
+          },
+        });
+      }
+
+      const finalQuantity = isShortage
+        ? currentQuantity - quantity
+        : currentQuantity + quantity;
+
+      if (isShortage && finalQuantity <= product.reorderLevel) {
+        await tx.alert.create({
+          data: {
+            type: "LOW_STOCK",
+            title: "تنبيه: مخزون منخفض بعد تصحيح الجرد",
+            message: `المنتج "${product.name}" وصل إلى مستوى إعادة الطلب (${finalQuantity} وحدة متبقية)`,
+          },
+        });
+      }
+
+      return movement;
+    });
+
+    revalidatePath("/dashboard/inventory");
+    revalidatePath("/dashboard/inventory/movements");
+    revalidatePath(`/dashboard/inventory/warehouses/${warehouse.id}`);
+    revalidatePath("/dashboard/financial-statements");
+    revalidatePath("/dashboard/reports");
+
+    return {
+      success: true,
+      data: { id: result.id },
+      message: isShortage
+        ? "تم تسجيل نقص المخزون بنجاح"
+        : "تم تسجيل زيادة المخزون بنجاح",
+    };
+  } catch (e: unknown) {
+    return { success: false, error: handleActionError(e) };
+  }
+}
+
+// ─── Samples / Promotional Dispatch Action ────────────────────
+
+/**
+ * Issues free medical samples / promotional items to a sales representative.
+ *
+ * Financial treatment: reduces inventory and is reported as a marketing and
+ * promotional operating expense. It deliberately creates NO treasury
+ * transaction and does NOT affect the rep's sales targets or commissions.
+ */
+export async function dispatchSamples(
+  formData: z.infer<typeof DispatchSamplesSchema>
+): Promise<ActionResult<{ id: string }>> {
+  try {
+    await requireRole([
+      UserRole.SUPER_ADMIN,
+      UserRole.ADMIN,
+      UserRole.WAREHOUSE_MANAGER,
+      UserRole.SALES_MANAGER,
+    ]);
+
+    const data = DispatchSamplesSchema.parse(formData);
+
+    const [warehouse, salesRep] = await Promise.all([
+      prisma.warehouse.findUnique({
+        where: { id: data.warehouseId },
+        select: { id: true, name: true, isActive: true },
+      }),
+      prisma.salesRep.findUnique({
+        where: { id: data.salesRepId },
+        select: { id: true, name: true, isActive: true },
+      }),
+    ]);
+
+    if (!warehouse || !warehouse.isActive) {
+      return { success: false, error: "المخزن غير موجود أو غير مفعّل" };
+    }
+    if (!salesRep || !salesRep.isActive) {
+      return { success: false, error: "المندوب غير موجود أو غير مفعّل" };
+    }
+
+    const productIds = Array.from(
+      new Set(data.items.map((item) => item.productId))
+    );
+    const [products, stockItems] = await Promise.all([
+      prisma.product.findMany({
+        where: { id: { in: productIds } },
+        select: {
+          id: true,
+          name: true,
+          isActive: true,
+          costPrice: true,
+          sellingPrice: true,
+        },
+      }),
+      prisma.stockItem.findMany({
+        where: {
+          warehouseId: warehouse.id,
+          productId: { in: productIds },
+        },
+        select: {
+          productId: true,
+          quantity: true,
+          reservedQty: true,
+        },
+      }),
+    ]);
+    const productMap = new Map(products.map((product) => [product.id, product]));
+    const stockMap = new Map(
+      stockItems.map((stockItem) => [stockItem.productId, stockItem])
+    );
+
+    for (const productId of productIds) {
+      const product = productMap.get(productId);
+      if (!product) {
+        return { success: false, error: "أحد المنتجات المختارة غير موجود" };
+      }
+      if (!product.isActive) {
+        return {
+          success: false,
+          error: `المنتج "${product.name}" غير مفعّل ولا يمكن صرف عينات منه`,
+        };
+      }
+    }
+
+    const normalizedItems = data.items.map((item) => {
+      const product = productMap.get(item.productId)!;
+      const quantity = Number(item.quantity);
+      const unitCost = resolveProductCost(product);
+
+      return {
+        productId: item.productId,
+        productName: product.name,
+        quantity,
+        unitCost,
+        lineTotal: quantity * unitCost,
+      };
+    });
+    const totalCost = normalizedItems.reduce(
+      (sum, item) => sum + item.lineTotal,
+      0
+    );
+
+    // Available stock excludes quantities already reserved for orders.
+    for (const item of normalizedItems) {
+      const stockItem = stockMap.get(item.productId);
+      const reservedQty = Number(stockItem?.reservedQty ?? 0);
+      const available = Number(stockItem?.quantity ?? 0) - reservedQty;
+
+      if (available < item.quantity) {
+        return {
+          success: false,
+          error: `المخزون المتاح غير كافٍ للمنتج "${item.productName}". المتاح: ${available}، المطلوب: ${item.quantity}`,
+        };
+      }
+    }
+
+    const result = await prisma.$transaction(async (tx) => {
+      const movementCount = await tx.stockMovement.count({
+        where: { movementType: StockMovementType.SAMPLES_DISPATCH },
+      });
+      const referenceNumber = `SMP-${new Date().getFullYear()}-${String(
+        movementCount + 1
+      ).padStart(4, "0")}`;
+
+      const movement = await tx.stockMovement.create({
+        data: {
+          movementType: StockMovementType.SAMPLES_DISPATCH,
+          source: StockMovementSource.WAREHOUSE,
+          sourceWarehouseId: warehouse.id,
+          salesRepId: salesRep.id,
+          referenceNumber,
+          notes:
+            data.notes && data.notes.length > 0
+              ? data.notes
+              : "صرف عينات طبية / دعاية مجانية",
+          totalCost,
+          items: {
+            create: normalizedItems.map((item) => ({
+              productId: item.productId,
+              quantity: item.quantity,
+              unitCost: item.unitCost,
+            })),
+          },
+        },
+      });
+
+      for (const item of normalizedItems) {
+        const stockItem = stockMap.get(item.productId);
+        const reservedQty = Number(stockItem?.reservedQty ?? 0);
+
+        // Guard against a concurrent stock change between validation and save.
+        const updated = await tx.stockItem.updateMany({
+          where: {
+            warehouseId: warehouse.id,
+            productId: item.productId,
+            reservedQty,
+            quantity: { gte: item.quantity + reservedQty },
+          },
+          data: { quantity: { decrement: item.quantity } },
+        });
+
+        if (updated.count !== 1) {
+          throw new Error(
+            `تغيّر رصيد المنتج "${item.productName}" أثناء الحفظ. يرجى إعادة المحاولة.`
+          );
+        }
+      }
+
+      const updatedStockItems = await tx.stockItem.findMany({
+        where: {
+          warehouseId: warehouse.id,
+          productId: { in: productIds },
+        },
+        select: {
+          quantity: true,
+          product: { select: { name: true, reorderLevel: true } },
+        },
+      });
+
+      const alertsToCreate = updatedStockItems
+        .filter(
+          (stockItem) =>
+            Number(stockItem.quantity) <= stockItem.product.reorderLevel
+        )
+        .map((stockItem) => ({
+          type: "LOW_STOCK" as const,
+          title: "تنبيه: مخزون منخفض بعد صرف العينات",
+          message: `المنتج "${stockItem.product.name}" وصل إلى مستوى إعادة الطلب (${stockItem.quantity} وحدة متبقية)`,
+        }));
+
+      if (alertsToCreate.length > 0) {
+        await tx.alert.createMany({ data: alertsToCreate });
+      }
+
+      return movement;
+    });
+
+    revalidatePath("/dashboard/inventory");
+    revalidatePath("/dashboard/inventory/movements");
+    revalidatePath(`/dashboard/inventory/warehouses/${warehouse.id}`);
+    revalidatePath("/dashboard/financial-statements");
+    revalidatePath("/dashboard/reports");
+    revalidatePath("/dashboard/sales-reps");
+    revalidatePath(`/dashboard/sales-reps/${salesRep.id}`);
+
+    return {
+      success: true,
+      data: { id: result.id },
+      message: `تم صرف العينات للمندوب ${salesRep.name} بنجاح`,
+    };
   } catch (e: unknown) {
     return { success: false, error: handleActionError(e) };
   }

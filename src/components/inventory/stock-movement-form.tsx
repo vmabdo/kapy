@@ -1,6 +1,7 @@
 "use client";
 
 import { useState, useTransition } from "react";
+import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { useForm, useFieldArray } from "react-hook-form";
 import { zodResolver } from "@hookform/resolvers/zod";
@@ -11,7 +12,17 @@ import {
   WarehouseType,
 } from "@prisma/client";
 import { createStockMovement } from "@/actions/inventory";
-import { Plus, Trash2, Loader2, ArrowLeftRight } from "lucide-react";
+import {
+  Plus,
+  Trash2,
+  Loader2,
+  ArrowLeftRight,
+  Gift,
+  PackagePlus,
+  Scale,
+  Truck,
+  type LucideIcon,
+} from "lucide-react";
 import { cn } from "@/lib/utils";
 
 // ── Types ─────────────────────────────────────────────────────
@@ -26,12 +37,7 @@ interface Product {
   name: string;
   sku: string;
   unit: string;
-}
-
-interface SalesRep {
-  id: string;
-  name: string;
-  employeeCode: string;
+  costPrice: number;
 }
 
 interface Supplier {
@@ -42,19 +48,23 @@ interface Supplier {
 interface Props {
   warehouses: Warehouse[];
   products: Product[];
-  salesReps: SalesRep[];
   suppliers: Supplier[];
   defaultWarehouseId?: string;
 }
 
 // ── Schema ────────────────────────────────────────────────────
 const Schema = z.object({
-  movementType: z.nativeEnum(StockMovementType),
-  source: z.nativeEnum(StockMovementSource),
+  movementType: z.enum([
+    StockMovementType.INBOUND,
+    StockMovementType.OUTBOUND,
+  ]),
+  source: z.enum([
+    StockMovementSource.SUPPLIER,
+    StockMovementSource.WAREHOUSE,
+  ]),
   sourceWarehouseId: z.string().optional(),
   targetWarehouseId: z.string().optional(),
   supplierId: z.string().optional(),
-  salesRepId: z.string().optional(),
   referenceNumber: z.string().optional(),
   notes: z.string().optional(),
   items: z
@@ -70,42 +80,71 @@ const Schema = z.object({
 });
 
 type FormData = z.infer<typeof Schema>;
+type AllowedMovementType = FormData["movementType"];
+type AllowedMovementSource = FormData["source"];
+
+// Shared card styling so operational movements and the dedicated inventory
+// flows use exactly the same layout and hover behaviour.
+const MOVEMENT_CARD_CLASSES =
+  "p-3 rounded-xl border text-right transition-all duration-150 text-sm";
+const MOVEMENT_CARD_INACTIVE_CLASSES =
+  "border-border hover:border-primary/30 text-muted-foreground hover:text-foreground";
+
+interface MovementCardContent {
+  label: string;
+  description: string;
+  icon: LucideIcon;
+}
 
 // ── Movement type configs ─────────────────────────────────────
-const MOVEMENT_PRESETS: Record<string, { label: string; type: StockMovementType; source: StockMovementSource; description: string }> = {
+const MOVEMENT_PRESETS: Record<
+  string,
+  MovementCardContent & {
+    type: AllowedMovementType;
+    source: AllowedMovementSource;
+  }
+> = {
   receive_from_supplier: {
     label: "استلام من مورد",
     type: StockMovementType.INBOUND,
     source: StockMovementSource.SUPPLIER,
     description: "استلام بضاعة من مورد/مصنع إلى المخزن الرئيسي",
+    icon: Truck,
   },
   transfer_to_sub: {
     label: "تحويل إلى مخزن فرعي",
     type: StockMovementType.OUTBOUND,
     source: StockMovementSource.WAREHOUSE,
     description: "تحويل بضاعة من المخزن الرئيسي إلى مخزن فرعي",
-  },
-  issue_to_rep: {
-    label: "صرف لمندوب",
-    type: StockMovementType.OUTBOUND,
-    source: StockMovementSource.SALES_REP,
-    description: "صرف بضاعة لمندوب مبيعات للتوزيع",
-  },
-  return_from_rep: {
-    label: "مرتجع من مندوب",
-    type: StockMovementType.RETURN_INBOUND,
-    source: StockMovementSource.SALES_REP,
-    description: "استرداد بضاعة من مندوب المبيعات",
-  },
-  adjustment: {
-    label: "تسوية مخزون",
-    type: StockMovementType.ADJUSTMENT,
-    source: StockMovementSource.WAREHOUSE,
-    description: "تعديل يدوي لرصيد المخزون (جرد)",
+    icon: ArrowLeftRight,
   },
 };
 
-export function StockMovementForm({ warehouses, products, salesReps, suppliers, defaultWarehouseId }: Props) {
+// Dedicated flows navigate to their own pages instead of changing the preset.
+const INVENTORY_FLOW_LINKS: Array<
+  MovementCardContent & { href: string }
+> = [
+  {
+    label: "إدخال رصيد افتتاحي للمخزن",
+    href: "/dashboard/inventory/movements/opening-balance",
+    description: "تسجيل الكميات الفعلية الحالية وتقييمها كرأس مال مخزني افتتاحي",
+    icon: PackagePlus,
+  },
+  {
+    label: "تصحيح أعداد المخزن (جرد)",
+    href: "/dashboard/inventory/movements/correction",
+    description: "تسجيل فروق الجرد بالزيادة أو النقص مع حساب التأثير المالي",
+    icon: Scale,
+  },
+  {
+    label: "صرف عينات / دعاية مجانية",
+    href: "/dashboard/inventory/movements/samples",
+    description: "صرف عينات طبية للمناديب تُحمّل كمصروف تسويق غير نقدي",
+    icon: Gift,
+  },
+];
+
+export function StockMovementForm({ warehouses, products, suppliers, defaultWarehouseId }: Props) {
   const router = useRouter();
   const [isPending, startTransition] = useTransition();
   const [serverError, setServerError] = useState<string | null>(null);
@@ -140,6 +179,10 @@ export function StockMovementForm({ warehouses, products, salesReps, suppliers, 
     const p = MOVEMENT_PRESETS[key];
     setValue("movementType", p.type);
     setValue("source", p.source);
+    // Clear warehouse/supplier values that belonged to the previous flow.
+    setValue("sourceWarehouseId", "");
+    setValue("targetWarehouseId", "");
+    setValue("supplierId", "");
   };
 
   const onSubmit = (data: FormData) => {
@@ -156,9 +199,8 @@ export function StockMovementForm({ warehouses, products, salesReps, suppliers, 
   };
 
   const needsSupplier = selectedPreset === "receive_from_supplier";
-  const needsSalesRep = selectedPreset === "issue_to_rep" || selectedPreset === "return_from_rep";
-  const needsSourceWarehouse = ["transfer_to_sub", "issue_to_rep", "return_from_rep"].includes(selectedPreset);
-  const needsTargetWarehouse = ["receive_from_supplier", "transfer_to_sub", "adjustment"].includes(selectedPreset);
+  const needsSourceWarehouse = selectedPreset === "transfer_to_sub";
+  const needsTargetWarehouse = true;
 
   return (
     <form onSubmit={handleSubmit(onSubmit)} className="space-y-6" dir="rtl">
@@ -168,23 +210,46 @@ export function StockMovementForm({ warehouses, products, salesReps, suppliers, 
           <ArrowLeftRight className="w-4 h-4 text-primary" />
           نوع الحركة
         </h2>
-        <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 gap-2">
-          {Object.entries(MOVEMENT_PRESETS).map(([key, p]) => (
-            <button
-              key={key}
-              type="button"
-              onClick={() => handlePresetChange(key)}
-              className={cn(
-                "p-3 rounded-xl border text-right transition-all duration-150 text-sm",
-                selectedPreset === key
-                  ? "border-primary bg-primary/5 text-primary"
-                  : "border-border hover:border-primary/30 text-muted-foreground hover:text-foreground"
-              )}
-            >
-              <p className="font-semibold leading-tight">{p.label}</p>
-              <p className="text-[10px] mt-1 opacity-70 leading-tight">{p.description}</p>
-            </button>
-          ))}
+        <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+          {Object.entries(MOVEMENT_PRESETS).map(([key, p]) => {
+            const Icon = p.icon;
+            return (
+              <button
+                key={key}
+                type="button"
+                onClick={() => handlePresetChange(key)}
+                className={cn(
+                  MOVEMENT_CARD_CLASSES,
+                  selectedPreset === key
+                    ? "border-primary bg-primary/5 text-primary"
+                    : MOVEMENT_CARD_INACTIVE_CLASSES
+                )}
+              >
+                <p className="font-semibold leading-tight flex items-center gap-1.5">
+                  <Icon className="w-3.5 h-3.5 shrink-0" />
+                  {p.label}
+                </p>
+                <p className="text-[10px] mt-1 opacity-70 leading-tight">{p.description}</p>
+              </button>
+            );
+          })}
+
+          {INVENTORY_FLOW_LINKS.map((flow) => {
+            const Icon = flow.icon;
+            return (
+              <Link
+                key={flow.href}
+                href={flow.href}
+                className={cn(MOVEMENT_CARD_CLASSES, MOVEMENT_CARD_INACTIVE_CLASSES)}
+              >
+                <p className="font-semibold leading-tight flex items-center gap-1.5">
+                  <Icon className="w-3.5 h-3.5 shrink-0" />
+                  {flow.label}
+                </p>
+                <p className="text-[10px] mt-1 opacity-70 leading-tight">{flow.description}</p>
+              </Link>
+            );
+          })}
         </div>
       </div>
 
@@ -203,22 +268,6 @@ export function StockMovementForm({ warehouses, products, salesReps, suppliers, 
                 <option value="">اختر المورد</option>
                 {suppliers.map((s) => (
                   <option key={s.id} value={s.id}>{s.name}</option>
-                ))}
-              </select>
-            </div>
-          )}
-
-          {/* Sales Rep */}
-          {needsSalesRep && (
-            <div className="space-y-1.5">
-              <label className="text-sm font-medium">المندوب</label>
-              <select
-                {...register("salesRepId")}
-                className="w-full px-3 py-2.5 rounded-xl border border-border bg-background text-sm focus:outline-none focus:ring-2 focus:ring-primary/30"
-              >
-                <option value="">اختر المندوب</option>
-                {salesReps.map((r) => (
-                  <option key={r.id} value={r.id}>{r.name} ({r.employeeCode})</option>
                 ))}
               </select>
             </div>
@@ -251,7 +300,7 @@ export function StockMovementForm({ warehouses, products, salesReps, suppliers, 
                 className="w-full px-3 py-2.5 rounded-xl border border-border bg-background text-sm focus:outline-none focus:ring-2 focus:ring-primary/30"
               >
                 <option value="">اختر المخزن</option>
-                {(selectedPreset === "transfer_to_sub" ? subWarehouses : warehouses).map((w) => (
+                {(selectedPreset === "transfer_to_sub" ? subWarehouses : mainWarehouses).map((w) => (
                   <option key={w.id} value={w.id}>{w.name}</option>
                 ))}
               </select>
@@ -296,12 +345,26 @@ export function StockMovementForm({ warehouses, products, salesReps, suppliers, 
 
         <div className="space-y-3">
           {fields.map((field, index) => (
-            <div key={field.id} className={`grid gap-3 items-start ${needsSupplier ? "grid-cols-12" : "grid-cols-10"}`}>
+            <div key={field.id} className="grid grid-cols-12 gap-3 items-start">
               {/* Product */}
               <div className={needsSupplier ? "col-span-5" : "col-span-7"}>
                 {index === 0 && <label className="text-xs text-muted-foreground mb-1 block">المنتج</label>}
                 <select
-                  {...register(`items.${index}.productId`)}
+                  {...register(`items.${index}.productId`, {
+                    onChange: (event) => {
+                      if (!needsSupplier) return;
+                      const product = products.find(
+                        (entry) => entry.id === event.target.value
+                      );
+                      if (product) {
+                        setValue(
+                          `items.${index}.unitCost`,
+                          product.costPrice,
+                          { shouldValidate: true, shouldDirty: true }
+                        );
+                      }
+                    },
+                  })}
                   className="w-full px-3 py-2.5 rounded-xl border border-border bg-background text-sm focus:outline-none focus:ring-2 focus:ring-primary/30"
                 >
                   <option value="">اختر منتجاً...</option>

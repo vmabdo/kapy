@@ -2,14 +2,20 @@ import type { Metadata } from "next";
 import Link from "next/link";
 import {
   Package,
+  PackagePlus,
   Plus,
   Warehouse,
   ArrowLeftRight,
   AlertTriangle,
+  Gift,
+  ShoppingCart,
+  TrendingDown,
+  TrendingUp,
 } from "lucide-react";
 import { getAllWarehouses, getLowStockItems } from "@/queries/inventory";
+import { getInventoryFinancialSummary } from "@/queries/stock-financials";
 import { WarehouseType } from "@prisma/client";
-import { cn, formatNumber } from "@/lib/utils";
+import { cn, formatCurrency, formatNumber } from "@/lib/utils";
 import { SupplierDialog } from "@/components/inventory/supplier-dialog";
 
 export const metadata: Metadata = { title: "إدارة المخازن" };
@@ -18,13 +24,28 @@ export const metadata: Metadata = { title: "إدارة المخازن" };
 export const dynamic = "force-dynamic";
 
 export default async function InventoryPage() {
-  const [warehouses, lowStockItems] = await Promise.all([
+  const now = new Date();
+  const startOfMonth = new Date(now.getFullYear(), now.getMonth(), 1);
+  const endOfMonth = new Date(
+    now.getFullYear(),
+    now.getMonth() + 1,
+    0,
+    23,
+    59,
+    59,
+    999
+  );
+
+  const [warehouses, lowStockItems, inventoryFinancials] = await Promise.all([
     getAllWarehouses(),
     getLowStockItems(),
+    getInventoryFinancialSummary({ from: startOfMonth, to: endOfMonth }),
   ]);
 
   const mainWarehouse = warehouses.find((w) => w.type === WarehouseType.MAIN);
   const subWarehouses = warehouses.filter((w) => w.type === WarehouseType.SUB);
+  const netAdjustment =
+    inventoryFinancials.surplusValue - inventoryFinancials.shortageValue;
 
   return (
     <div>
@@ -57,6 +78,111 @@ export default async function InventoryPage() {
             <Plus className="w-4 h-4" />
             مخزن جديد
           </Link>
+        </div>
+      </div>
+
+      {/* Inventory financial snapshot */}
+      <div className="grid grid-cols-2 xl:grid-cols-5 gap-3 mb-6">
+        <div className="bg-card border border-border rounded-xl p-4">
+          <div className="flex items-center justify-between gap-2">
+            <p className="text-[11px] font-semibold text-muted-foreground">
+              قيمة المخزون الحالي
+            </p>
+            <span className="w-8 h-8 rounded-lg flex items-center justify-center bg-blue-500/10 text-blue-500 shrink-0">
+              <Package className="w-4 h-4" />
+            </span>
+          </div>
+          <p className="text-lg font-extrabold font-mono text-foreground mt-2">
+            {formatCurrency(inventoryFinancials.inventoryValue)}
+          </p>
+          <p className="text-[10px] text-muted-foreground mt-1">
+            أصول مخزنية بسعر التكلفة
+          </p>
+        </div>
+
+        <div className="bg-card border border-border rounded-xl p-4">
+          <div className="flex items-center justify-between gap-2">
+            <p className="text-[11px] font-semibold text-muted-foreground">
+              رأس المال المخزني الافتتاحي
+            </p>
+            <span className="w-8 h-8 rounded-lg flex items-center justify-center bg-emerald-500/10 text-emerald-500 shrink-0">
+              <PackagePlus className="w-4 h-4" />
+            </span>
+          </div>
+          <p className="text-lg font-extrabold font-mono text-foreground mt-2">
+            {formatCurrency(inventoryFinancials.openingStockValue)}
+          </p>
+          <p className="text-[10px] text-muted-foreground mt-1">
+            بضاعة أول المدة — بدون تأثير نقدي
+          </p>
+        </div>
+
+        <div className="bg-card border border-border rounded-xl p-4">
+          <div className="flex items-center justify-between gap-2">
+            <p className="text-[11px] font-semibold text-muted-foreground">
+              مشتريات الشهر
+            </p>
+            <span className="w-8 h-8 rounded-lg flex items-center justify-center bg-cyan-500/10 text-cyan-500 shrink-0">
+              <ShoppingCart className="w-4 h-4" />
+            </span>
+          </div>
+          <p className="text-lg font-extrabold font-mono text-foreground mt-2">
+            {formatCurrency(inventoryFinancials.purchasesValue)}
+          </p>
+          <p className="text-[10px] text-muted-foreground mt-1">
+            الوارد الفعلي من الموردين هذا الشهر
+          </p>
+        </div>
+
+        <div className="bg-card border border-border rounded-xl p-4">
+          <div className="flex items-center justify-between gap-2">
+            <p className="text-[11px] font-semibold text-muted-foreground">
+              عينات ودعاية هذا الشهر
+            </p>
+            <span className="w-8 h-8 rounded-lg flex items-center justify-center bg-pink-500/10 text-pink-500 shrink-0">
+              <Gift className="w-4 h-4" />
+            </span>
+          </div>
+          <p className="text-lg font-extrabold font-mono text-pink-600 mt-2">
+            {formatCurrency(inventoryFinancials.samplesValue)}
+          </p>
+          <p className="text-[10px] text-muted-foreground mt-1">
+            مصروف تسويق غير نقدي — لا يمس الخزينة
+          </p>
+        </div>
+
+        <div className="bg-card border border-border rounded-xl p-4">
+          <div className="flex items-center justify-between gap-2">
+            <p className="text-[11px] font-semibold text-muted-foreground">
+              صافي فروق الجرد هذا الشهر
+            </p>
+            <span
+              className={cn(
+                "w-8 h-8 rounded-lg flex items-center justify-center shrink-0",
+                netAdjustment >= 0
+                  ? "bg-teal-500/10 text-teal-500"
+                  : "bg-red-500/10 text-red-500"
+              )}
+            >
+              {netAdjustment >= 0 ? (
+                <TrendingUp className="w-4 h-4" />
+              ) : (
+                <TrendingDown className="w-4 h-4" />
+              )}
+            </span>
+          </div>
+          <p
+            className={cn(
+              "text-lg font-extrabold font-mono mt-2",
+              netAdjustment >= 0 ? "text-teal-600" : "text-red-500"
+            )}
+          >
+            {formatCurrency(netAdjustment)}
+          </p>
+          <p className="text-[10px] text-muted-foreground mt-1">
+            زيادة {formatCurrency(inventoryFinancials.surplusValue)} / نقص{" "}
+            {formatCurrency(inventoryFinancials.shortageValue)}
+          </p>
         </div>
       </div>
 

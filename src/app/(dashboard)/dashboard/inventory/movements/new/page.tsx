@@ -1,7 +1,7 @@
 import type { Metadata } from "next";
 import { getAllWarehouses, getAllProducts, getAllSuppliers } from "@/queries/inventory";
-import { prisma } from "@/lib/prisma";
 import { StockMovementForm } from "@/components/inventory/stock-movement-form";
+import { resolveProductCost } from "@/lib/costing";
 import { ArrowRight, ArrowLeftRight } from "lucide-react";
 import Link from "next/link";
 
@@ -13,15 +13,10 @@ interface Props {
 }
 
 export default async function NewStockMovementPage({ searchParams }: Props) {
-  const [warehouses, productsRaw, suppliers, reps] = await Promise.all([
+  const [warehouses, productsRaw, suppliers] = await Promise.all([
     getAllWarehouses(),
     getAllProducts(),
     getAllSuppliers(),
-    prisma.salesRep.findMany({
-      where: { isActive: true },
-      select: { id: true, name: true, employeeCode: true },
-      orderBy: { name: "asc" },
-    }),
   ]);
 
   const products = productsRaw.map((p) => ({
@@ -29,6 +24,7 @@ export default async function NewStockMovementPage({ searchParams }: Props) {
     name: p.name,
     sku: p.sku,
     unit: p.unit,
+    costPrice: resolveProductCost(p),
   }));
 
   return (
@@ -46,14 +42,15 @@ export default async function NewStockMovementPage({ searchParams }: Props) {
             <ArrowLeftRight className="w-6 h-6 text-primary" />
             تسجيل حركة مخزون
           </h1>
-          <p className="page-subtitle">استلام من مورد، تحويل بين مخازن، صرف لمندوب، أو تسوية</p>
+          <p className="page-subtitle">
+            استلام بضاعة من مورد، تحويل بين المخازن، أو إجراء مخزني خاص
+          </p>
         </div>
       </div>
 
       <StockMovementForm
         warehouses={warehouses.map((w) => ({ id: w.id, name: w.name, type: w.type }))}
         products={products}
-        salesReps={reps}
         suppliers={suppliers.map((s) => ({ id: s.id, name: s.name }))}
         defaultWarehouseId={searchParams.warehouseId}
       />

@@ -1,6 +1,14 @@
 "use server";
 
 import { prisma } from "@/lib/prisma";
+import { resolveProductCost } from "@/lib/costing";
+import {
+  getInventoryValuation,
+  getOpeningStockValue,
+  getPurchasesValue,
+  getSamplesDispatchValue,
+  getStockAdjustmentTotals,
+} from "@/queries/stock-financials";
 
 // --- Types --------------------------------------------------------------------
 
@@ -14,7 +22,11 @@ export interface IncomeStatementData {
   repBonuses: number;
   repDeductions: number;
   operatingExpenses: number;
+  inventoryShortageLoss: number;
+  marketingSamplesExpense: number;
   totalOperatingExpenses: number;
+  inventorySurplusGain: number;
+  periodPurchasesValue: number;
   netIncome: number;
 }
 
@@ -22,6 +34,7 @@ export interface BalanceSheetData {
   cashBalance: number;
   accountsReceivable: number;
   inventoryValue: number;
+  openingInventoryValue: number;
   totalAssets: number;
   accountsPayable: number;
   totalLiabilities: number;
@@ -62,6 +75,9 @@ export async function getIncomeStatement(year: number, month: number): Promise<I
     bonusesAggregate,
     deductionsAggregate,
     opExpensesAggregate,
+    stockAdjustments,
+    periodPurchasesValue,
+    marketingSamplesExpense,
   ] = await Promise.all([
     prisma.invoice.aggregate({
       where: {
@@ -120,18 +136,20 @@ export async function getIncomeStatement(year: number, month: number): Promise<I
       },
       _sum: { amount: true },
     }),
+    getStockAdjustmentTotals(startDate, endDate),
+    getPurchasesValue(startDate, endDate),
+    getSamplesDispatchValue(startDate, endDate),
   ]);
 
   const grossSalesRevenue = Number(salesAggregate._sum.total ?? 0);
   const totalReturns = Number(returnsAggregate._sum.totalAmount ?? 0);
   const netRevenue = grossSalesRevenue - totalReturns;
 
-  const cogs = invoiceItemsWithCost.reduce((sum: number, item: any) => {
-    const cost = item.product.costPrice != null
-      ? Number(item.product.costPrice)
-      : Number(item.product.sellingPrice) * 0.6;
-    return sum + item.quantity * cost;
-  }, 0);
+  const cogs = invoiceItemsWithCost.reduce(
+    (sum, item) =>
+      sum + Number(item.quantity) * resolveProductCost(item.product),
+    0
+  );
 
   const grossProfit = netRevenue - cogs;
 
@@ -140,8 +158,19 @@ export async function getIncomeStatement(year: number, month: number): Promise<I
   const repDeductions = Number(deductionsAggregate._sum.amount ?? 0);
   const operatingExpenses = Number(opExpensesAggregate._sum.amount ?? 0);
 
-  const totalOperatingExpenses = repSalaries + repBonuses - repDeductions + operatingExpenses;
-  const netIncome = grossProfit - totalOperatingExpenses;
+  // Non-cash inventory adjustments for the selected period.
+  const inventoryShortageLoss = stockAdjustments.shortageValue;
+  const inventorySurplusGain = stockAdjustments.surplusValue;
+
+  const totalOperatingExpenses =
+    repSalaries +
+    repBonuses -
+    repDeductions +
+    operatingExpenses +
+    inventoryShortageLoss +
+    marketingSamplesExpense;
+  const netIncome =
+    grossProfit + inventorySurplusGain - totalOperatingExpenses;
 
   return {
     grossSalesRevenue,
@@ -153,7 +182,11 @@ export async function getIncomeStatement(year: number, month: number): Promise<I
     repBonuses,
     repDeductions,
     operatingExpenses,
+    inventoryShortageLoss,
+    marketingSamplesExpense,
     totalOperatingExpenses,
+    inventorySurplusGain,
+    periodPurchasesValue,
     netIncome,
   };
 }
@@ -161,37 +194,29 @@ export async function getIncomeStatement(year: number, month: number): Promise<I
 // --- Balance Sheet -------------------------------------------------------------
 
 export async function getBalanceSheet(): Promise<BalanceSheetData> {
-  const [treasury, creditReceivables, stockItems] = await Promise.all([
-    prisma.treasury.findFirst({
-      select: { currentBalance: true },
-      orderBy: { createdAt: "asc" },
-    }),
-    prisma.invoice.aggregate({
-      where: {
-        type: "CREDIT",
-        status: { notIn: ["PAID", "CANCELLED"] },
-        remainingAmount: { gt: 0 },
-      },
-      _sum: { remainingAmount: true },
-    }),
-    prisma.stockItem.findMany({
-      where: { quantity: { gt: 0 } },
-      select: {
-        quantity: true,
-        product: { select: { costPrice: true, sellingPrice: true } },
-      },
-    }),
-  ]);
+  const [treasury, creditReceivables, inventoryValue, openingInventoryValue] =
+    await Promise.all([
+      prisma.treasury.findFirst({
+        select: { currentBalance: true },
+        orderBy: { createdAt: "asc" },
+      }),
+      prisma.invoice.aggregate({
+        where: {
+          type: "CREDIT",
+          status: { notIn: ["PAID", "CANCELLED"] },
+          remainingAmount: { gt: 0 },
+        },
+        _sum: { remainingAmount: true },
+      }),
+      // Current quantities already include opening balances, surplus and
+      // shortage corrections, and are net of free-sample dispatches because
+      // every inventory action updates StockItem.
+      getInventoryValuation(),
+      getOpeningStockValue(),
+    ]);
 
   const cashBalance = Number(treasury?.currentBalance ?? 0);
   const accountsReceivable = Number(creditReceivables._sum.remainingAmount ?? 0);
-
-  const inventoryValue = stockItems.reduce((sum: number, item: any) => {
-    const cost = item.product.costPrice != null
-      ? Number(item.product.costPrice)
-      : Number(item.product.sellingPrice) * 0.6;
-    return sum + item.quantity * cost;
-  }, 0);
 
   const totalAssets = cashBalance + accountsReceivable + inventoryValue;
   const accountsPayable = 0;
@@ -202,6 +227,7 @@ export async function getBalanceSheet(): Promise<BalanceSheetData> {
     cashBalance,
     accountsReceivable,
     inventoryValue,
+    openingInventoryValue,
     totalAssets,
     accountsPayable,
     totalLiabilities,

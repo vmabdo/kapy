@@ -26,11 +26,15 @@ enum WarehouseType {
 }
 
 enum StockMovementType {
-  INBOUND // Stock coming in (from supplier or main warehouse)
-  OUTBOUND // Stock going out (to sub-warehouse or to sales rep)
-  RETURN_INBOUND // Stock returned back to this warehouse
-  RETURN_OUTBOUND // Stock returned out (e.g., rep returns to warehouse)
-  ADJUSTMENT // Manual inventory correction
+  INBOUND // Stock coming in (from supplier)
+  OUTBOUND // Stock going out (warehouse transfer or sales invoice deduction)
+  RETURN_INBOUND // Stock returned back to this warehouse (e.g. pharmacy returns)
+  RETURN_OUTBOUND // Legacy: stock returned out (kept for historical rows)
+  ADJUSTMENT // Legacy generic adjustment (kept for historical rows)
+  OPENING_BALANCE // Opening stock capital — no treasury or supplier impact
+  ADJUSTMENT_IN // Stock count surplus / inventory gain
+  ADJUSTMENT_OUT // Stock count shortage / inventory loss
+  SAMPLES_DISPATCH // Free medical samples / promotional items issued to a rep
 }
 
 enum StockMovementSource {
@@ -307,12 +311,16 @@ model StockMovement {
   id                String              @id @default(cuid())
   movementType      StockMovementType
   source            StockMovementSource
-  sourceWarehouseId String? // null if source is supplier or rep
-  targetWarehouseId String? // null if outbound to rep
+  sourceWarehouseId String? // set for transfers, shortages and sample dispatches
+  targetWarehouseId String? // set for supplier receipts, transfers and stock surpluses
   supplierId        String? // populated when source = SUPPLIER
-  salesRepId        String? // populated when source/target = SALES_REP
+  salesRepId        String? // set for samples dispatch / legacy rep movements
   referenceNumber   String? // e.g., delivery note, PO number
   notes             String?
+  /// Financial value of this movement (Σ quantity × unit cost).
+  /// Used by financial statements for opening capital, purchases, shortages,
+  /// surpluses and free-sample marketing expenses.
+  totalCost         Decimal?            @db.Decimal(14, 2)
   movedAt           DateTime            @default(now())
   createdAt         DateTime            @default(now())
 
@@ -323,6 +331,7 @@ model StockMovement {
   salesRep        SalesRep?           @relation(fields: [salesRepId], references: [id])
   items           StockMovementItem[]
 
+  @@index([movementType, movedAt])
   @@map("stock_movements")
 }
 

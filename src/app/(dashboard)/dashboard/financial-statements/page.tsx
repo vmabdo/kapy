@@ -5,7 +5,7 @@ import { PeriodPicker } from "./period-picker";
 import { formatCurrency } from "@/lib/utils";
 import {
   TrendingUp, TrendingDown, Scale, Waves, FileText,
-  ArrowUpRight, ArrowDownRight, Building2, Package, Wallet,
+  ArrowUpRight, ArrowDownRight, Building2, Package, ShoppingCart, Wallet, Gift,
 } from "lucide-react";
 
 export const metadata: Metadata = { title: "القوائم المالية - Kapy Pharma" };
@@ -127,11 +127,36 @@ export default async function FinancialStatementsPage({ searchParams }: PageProp
       </div>
 
       {/* ── KPI Cards ────────────────────────────────────────── */}
-      <div className="grid grid-cols-2 md:grid-cols-4 gap-4 mb-6">
+      <div className="grid grid-cols-2 md:grid-cols-4 gap-4 mb-4">
         <StatCard label="صافي الإيرادات" value={IS.netRevenue} icon={TrendingUp} color="border-emerald-500/20" />
         <StatCard label="مجمل الربح" value={IS.grossProfit} icon={ArrowUpRight} color="border-blue-500/20" />
         <StatCard label="صافي الدخل" value={IS.netIncome} icon={TrendingDown} color={IS.netIncome >= 0 ? "border-emerald-500/20" : "border-red-500/20"} />
         <StatCard label="رصيد الخزينة" value={BS.cashBalance} icon={Wallet} color="border-purple-500/20" />
+      </div>
+
+      {/* ── Inventory Summary (non-cash) ─────────────────────── */}
+      <div className="mb-6">
+        <div className="flex items-center justify-between gap-3 mb-3">
+          <h2 className="text-sm font-bold flex items-center gap-2">
+            <Package className="w-4 h-4 text-primary" />
+            ملخص المخزون
+          </h2>
+          <span className="text-[11px] text-muted-foreground">
+            حركات غير نقدية — لا تؤثر على رصيد الخزينة
+          </span>
+        </div>
+        <div className="grid grid-cols-2 xl:grid-cols-5 gap-3">
+          <StatCard label="قيمة المخزون الحالي" value={BS.inventoryValue} icon={Package} color="border-amber-500/20" />
+          <StatCard label="رأس المال المخزني الافتتاحي" value={BS.openingInventoryValue} icon={Building2} color="border-teal-500/20" />
+          <StatCard label="مشتريات الفترة" value={IS.periodPurchasesValue} icon={ShoppingCart} color="border-cyan-500/20" />
+          <StatCard label="عينات ودعاية مجانية (الفترة)" value={IS.marketingSamplesExpense} icon={Gift} color="border-pink-500/20" />
+          <StatCard
+            label="صافي فروق الجرد (فائض - عجز)"
+            value={IS.inventorySurplusGain - IS.inventoryShortageLoss}
+            icon={IS.inventorySurplusGain - IS.inventoryShortageLoss >= 0 ? TrendingUp : TrendingDown}
+            color={IS.inventorySurplusGain - IS.inventoryShortageLoss >= 0 ? "border-emerald-500/20" : "border-red-500/20"}
+          />
+        </div>
       </div>
 
       {/* ── Tabs ─────────────────────────────────────────────── */}
@@ -173,18 +198,50 @@ export default async function FinancialStatementsPage({ searchParams }: PageProp
                   <StatRow label="تكلفة المنتجات المباعة" value={IS.cogs} level={1} />
                   <TotalRow label="مجمل الربح" value={IS.grossProfit} highlight />
 
+                  {/* Other income — inventory surplus */}
+                  <SectionHeader label="ثالثاً: إيرادات أخرى وتعديلات المخزون" icon={TrendingUp} color="text-teal-500" />
+                  <StatRow
+                    label="فائض فروق الجرد (زيادة مخزون)"
+                    value={IS.inventorySurplusGain}
+                    level={1}
+                    colored
+                    type="positive"
+                  />
+                  <TotalRow label="إجمالي الإيرادات الأخرى" value={IS.inventorySurplusGain} />
+
                   {/* Operating Expenses */}
-                  <SectionHeader label="ثالثاً: المصروفات التشغيلية" icon={ArrowDownRight} color="text-red-500" />
+                  <SectionHeader label="رابعاً: المصروفات التشغيلية" icon={ArrowDownRight} color="text-red-500" />
                   <StatRow label="مرتبات المناديب" value={IS.repSalaries} level={1} />
                   <StatRow label="المكافآت" value={IS.repBonuses} level={1} />
                   <StatRow label="يُطرح: الاستقطاعات" value={-IS.repDeductions} level={1} />
                   <StatRow label="المصروفات التشغيلية والإدارية" value={IS.operatingExpenses} level={1} />
+                  <StatRow
+                    label="خسائر عجز وتوالف المخزون (نقص جرد)"
+                    value={IS.inventoryShortageLoss}
+                    level={1}
+                    colored
+                    type="negative"
+                  />
+                  <StatRow
+                    label="مصروفات تسويق وعينات مجانية"
+                    value={IS.marketingSamplesExpense}
+                    level={1}
+                    colored
+                    type="negative"
+                  />
                   <TotalRow label="إجمالي المصروفات التشغيلية" value={IS.totalOperatingExpenses} />
 
                   {/* Net Income */}
                   <TotalRow label="صافي الدخل (الربح / الخسارة)" value={IS.netIncome} highlight />
                 </tbody>
               </table>
+            </div>
+
+            <div className="px-6 py-3 border-t border-border bg-muted/20 text-[11px] leading-relaxed text-muted-foreground">
+              ملاحظة: فائض فروق الجرد يُضاف كإيراد غير نقدي، وعجز/توالف
+              المخزون وقيمة العينات والدعاية المجانية تُحمّل كمصروفات غير
+              نقدية. لا يؤثر أي منها على رصيد الخزينة أو أهداف مبيعات
+              المناديب.
             </div>
           </div>
         </FinancialTabContent>
@@ -219,6 +276,7 @@ export default async function FinancialStatementsPage({ searchParams }: PageProp
                     <StatRow label="النقدية بالخزينة" value={BS.cashBalance} level={1} />
                     <StatRow label="ذمم مدينة (مبيعات آجلة غير محصّلة)" value={BS.accountsReceivable} level={1} />
                     <StatRow label="تقييم مخزون الأدوية (بسعر التكلفة)" value={BS.inventoryValue} level={1} />
+                    <StatRow label="منه: أرصدة افتتاحية للمخازن (بضاعة أول المدة)" value={BS.openingInventoryValue} level={2} />
                     <TotalRow label="إجمالي الأصول" value={BS.totalAssets} highlight />
                   </tbody>
                 </table>
@@ -238,7 +296,9 @@ export default async function FinancialStatementsPage({ searchParams }: PageProp
                     <TotalRow label="إجمالي الخصوم" value={BS.totalLiabilities} />
 
                     <SectionHeader label="حقوق الملكية" icon={Scale} color="text-emerald-500" />
-                    <StatRow label="رأس المال والأرباح المحتجزة (الحقوق)" value={BS.equity} level={1} />
+                    <StatRow label="رأس المال المخزني الافتتاحي" value={BS.openingInventoryValue} level={1} />
+                    <StatRow label="أرباح محتجزة وحقوق ملكية أخرى" value={BS.equity - BS.openingInventoryValue} level={1} />
+                    <TotalRow label="إجمالي حقوق الملكية" value={BS.equity} />
                     <TotalRow label="إجمالي الخصوم وحقوق الملكية" value={BS.totalLiabilities + BS.equity} highlight />
                   </tbody>
                 </table>
@@ -260,6 +320,11 @@ export default async function FinancialStatementsPage({ searchParams }: PageProp
                   </>
                 )}
               </div>
+            </div>
+            <div className="px-6 pb-4 text-[11px] leading-relaxed text-muted-foreground">
+              ملاحظة: تقييم المخزون يعكس الكميات المتبقية بعد خصم العينات
+              والدعاية المجانية المصروفة. تُحمّل قيمتها كمصروف تسويق في قائمة
+              الدخل ولا تُسجل كعجز أو توالف مخزون.
             </div>
           </div>
         </FinancialTabContent>
@@ -326,6 +391,12 @@ export default async function FinancialStatementsPage({ searchParams }: PageProp
                   {CF.netCashFlow >= 0 ? "تدفق نقدي إيجابي" : "تدفق نقدي سلبي"}: {fmt(Math.abs(CF.netCashFlow))}
                 </div>
               </div>
+            </div>
+
+            <div className="px-6 pb-4 text-[11px] leading-relaxed text-muted-foreground">
+              ملاحظة: الأرصدة الافتتاحية للمخازن وفروق الجرد (نقص/زيادة)
+              وصرف العينات والدعاية المجانية حركات غير نقدية، ولذلك لا تظهر
+              في التدفقات النقدية ولا تؤثر على رصيد الخزينة.
             </div>
           </div>
         </FinancialTabContent>
