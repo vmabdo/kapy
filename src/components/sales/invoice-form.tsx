@@ -1,8 +1,13 @@
 "use client";
 
-import { useState, useTransition, useEffect } from "react";
+import { useState, useTransition, useEffect, useMemo } from "react";
 import { useRouter } from "next/navigation";
-import { useForm, useFieldArray, useWatch } from "react-hook-form";
+import {
+  useForm,
+  useFieldArray,
+  useWatch,
+  Controller,
+} from "react-hook-form";
 import { zodResolver } from "@hookform/resolvers/zod";
 import { z } from "zod";
 import { InvoiceType } from "@prisma/client";
@@ -24,12 +29,23 @@ import {
   Building2,
   Store,
   Package,
+  AlertTriangle,
 } from "lucide-react";
 import { cn, formatCurrency, calculateDiscountAmount, calculateNetTotal } from "@/lib/utils";
 import { toast } from "sonner";
+import {
+  ClientCombobox,
+  type ClientComboboxOption,
+} from "@/components/sales/client-combobox";
+
+interface PharmacyOption extends ClientComboboxOption {
+  governorateId: string;
+  currentBalance: number;
+  creditLimit: number | null;
+}
 
 interface Props {
-  pharmacies: { id: string; name: string; clientType: string; governorateId: string }[];
+  pharmacies: PharmacyOption[];
   salesReps: { id: string; name: string; employeeCode: string }[];
   products: { id: string; name: string; sku: string; unit: string; sellingPrice: number }[];
   initialClientId?: string;
@@ -155,6 +171,14 @@ export function InvoiceForm({ pharmacies, salesReps, products, initialClientId }
   const paidAmount = useWatch({ control, name: "paidAmount" });
   const isLegacy = useWatch({ control, name: "isLegacy" });
   const legacyDebtAmount = useWatch({ control, name: "legacyDebtAmount" });
+  const selectedPharmacyId = useWatch({ control, name: "pharmacyId" });
+
+  // Selected client is resolved from the full list so the summary stays visible
+  // even when the client-type filter changes.
+  const selectedPharmacy = useMemo(
+    () => pharmacies.find((p) => p.id === selectedPharmacyId) ?? null,
+    [pharmacies, selectedPharmacyId]
+  );
 
   // When isLegacy is toggled on, force the invoice type to CREDIT and clear salesRepId
   useEffect(() => {
@@ -269,10 +293,13 @@ export function InvoiceForm({ pharmacies, salesReps, products, initialClientId }
     setValue("upfrontPaymentItems", newUpfront, { shouldValidate: true });
   };
 
-  const filteredClients =
-    clientFilter === "ALL"
-      ? pharmacies
-      : pharmacies.filter((p) => p.clientType === clientFilter);
+  const filteredClients = useMemo(
+    () =>
+      clientFilter === "ALL"
+        ? pharmacies
+        : pharmacies.filter((p) => p.clientType === clientFilter),
+    [clientFilter, pharmacies]
+  );
 
   const onSubmit = (data: FormData) => {
     if (data.isLegacy) {
@@ -497,7 +524,7 @@ export function InvoiceForm({ pharmacies, salesReps, products, initialClientId }
           <div className="space-y-1.5 md:col-span-2">
             <label className="text-sm font-medium">العميل</label>
             {/* Client type tabs */}
-            <div className="flex gap-1 mb-2">
+            <div className="flex flex-wrap gap-1 mb-2">
               {([
                 { value: "ALL", label: "الكل", icon: null },
                 { value: "PHARMACY", label: "صيدليات", icon: <Store className="w-3.5 h-3.5" /> },
@@ -519,17 +546,74 @@ export function InvoiceForm({ pharmacies, salesReps, products, initialClientId }
                 </button>
               ))}
             </div>
-            <select {...register("pharmacyId")} className={inputClass}>
-              <option value="">اختر العميل ({filteredClients.length} متاح)</option>
-              {filteredClients.map((p) => (
-                <option key={p.id} value={p.id}>
-                  {p.name}{" "}
-                  {p.clientType === "EXTERNAL_WAREHOUSE" ? "🏭" : "💊"}
-                </option>
-              ))}
-            </select>
+            <Controller
+              control={control}
+              name="pharmacyId"
+              render={({ field }) => (
+                <ClientCombobox
+                  options={filteredClients}
+                  selectedClient={selectedPharmacy}
+                  value={field.value ?? ""}
+                  onChange={(clientId) => field.onChange(clientId)}
+                  onBlur={field.onBlur}
+                  invalid={Boolean(errors.pharmacyId)}
+                  placeholder={`ابحث واختر العميل (${filteredClients.length} متاح)`}
+                />
+              )}
+            />
             {errors.pharmacyId && (
               <p className="text-red-500 text-xs">{errors.pharmacyId.message}</p>
+            )}
+
+            {/* Selected client financial snapshot */}
+            {selectedPharmacy && (
+              <div className="mt-2 space-y-1.5">
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+                  <div
+                    className={cn(
+                      "flex items-center justify-between gap-3 px-3 py-2 rounded-lg border text-xs",
+                      selectedPharmacy.currentBalance > 0
+                        ? "border-amber-200 bg-amber-50/60 dark:border-amber-900/40 dark:bg-amber-900/10"
+                        : "border-border bg-muted/30"
+                    )}
+                  >
+                    <span className="flex items-center gap-1.5 text-muted-foreground">
+                      <Wallet className="w-3.5 h-3.5" />
+                      الرصيد الحالي
+                    </span>
+                    <span
+                      className={cn(
+                        "font-bold",
+                        selectedPharmacy.currentBalance > 0
+                          ? "text-amber-700 dark:text-amber-400"
+                          : "text-foreground"
+                      )}
+                    >
+                      {formatCurrency(selectedPharmacy.currentBalance)}
+                    </span>
+                  </div>
+
+                  <div className="flex items-center justify-between gap-3 px-3 py-2 rounded-lg border border-border bg-muted/30 text-xs">
+                    <span className="flex items-center gap-1.5 text-muted-foreground">
+                      <CreditCard className="w-3.5 h-3.5" />
+                      الحد الائتماني
+                    </span>
+                    <span className="font-bold text-foreground">
+                      {selectedPharmacy.creditLimit === null
+                        ? "غير محدد"
+                        : formatCurrency(selectedPharmacy.creditLimit)}
+                    </span>
+                  </div>
+                </div>
+
+                {selectedPharmacy.creditLimit !== null &&
+                  selectedPharmacy.currentBalance > selectedPharmacy.creditLimit && (
+                    <p className="flex items-center gap-1.5 text-[11px] font-medium text-red-600 dark:text-red-400">
+                      <AlertTriangle className="w-3.5 h-3.5" />
+                      العميل تجاوز الحد الائتماني المسموح به
+                    </p>
+                  )}
+              </div>
             )}
           </div>
 

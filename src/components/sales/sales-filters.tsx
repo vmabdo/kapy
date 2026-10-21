@@ -2,7 +2,7 @@
 
 import { useState, useCallback, useRef, useEffect } from "react";
 import { createPortal } from "react-dom";
-import { useRouter, usePathname } from "next/navigation";
+import { useRouter, usePathname, useSearchParams } from "next/navigation";
 import { Filter, X, ChevronDown } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { InvoiceStatus, InvoiceType } from "@prisma/client";
@@ -37,6 +37,7 @@ const TYPE_OPTIONS: { value: InvoiceType; label: string }[] = [
 export function SalesFilters({ salesReps, clients, currentFilters }: Props) {
   const router = useRouter();
   const pathname = usePathname();
+  const searchParams = useSearchParams();
   const [isOpen, setIsOpen] = useState(false);
 
   // Local state — mirrors the URL params
@@ -71,21 +72,37 @@ export function SalesFilters({ salesReps, clients, currentFilters }: Props) {
   const activeCount = Object.values(currentFilters).filter(Boolean).length;
 
   const applyFilters = useCallback(() => {
-    const params = new URLSearchParams();
-    if (filters.status) params.set("status", filters.status);
-    if (filters.type) params.set("type", filters.type);
-    if (filters.repId) params.set("repId", filters.repId);
-    if (filters.clientId) params.set("clientId", filters.clientId);
-    if (filters.from) params.set("from", filters.from);
-    if (filters.to) params.set("to", filters.to);
+    // Preserve unrelated params (most importantly `query`) while changing
+    // the dropdown filters.
+    const params = new URLSearchParams(searchParams.toString());
+    const setOrDelete = (key: string, value: string) => {
+      if (value) params.set(key, value);
+      else params.delete(key);
+    };
+
+    setOrDelete("status", filters.status);
+    setOrDelete("type", filters.type);
+    setOrDelete("repId", filters.repId);
+    setOrDelete("clientId", filters.clientId);
+    setOrDelete("from", filters.from);
+    setOrDelete("to", filters.to);
+
     const qs = params.toString();
     router.push(qs ? `${pathname}?${qs}` : pathname);
     setIsOpen(false);
-  }, [filters, pathname, router]);
+  }, [filters, pathname, router, searchParams]);
 
   const clearFilters = () => {
     setFilters({ status: "", type: "", repId: "", clientId: "", from: "", to: "" });
-    router.push(pathname);
+
+    // Clear only the dropdown filters; keep the free-text search query.
+    const params = new URLSearchParams(searchParams.toString());
+    ["status", "type", "repId", "clientId", "from", "to"].forEach((key) =>
+      params.delete(key)
+    );
+
+    const qs = params.toString();
+    router.push(qs ? `${pathname}?${qs}` : pathname);
     setIsOpen(false);
   };
 

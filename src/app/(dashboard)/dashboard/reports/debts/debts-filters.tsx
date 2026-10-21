@@ -1,9 +1,10 @@
 "use client";
 
-import { useCallback, useEffect, useState, useTransition } from "react";
+import { useCallback, useTransition } from "react";
 import { usePathname, useRouter, useSearchParams } from "next/navigation";
 import { Loader2, MapPin, RotateCcw, Search, Tags, X } from "lucide-react";
 import { cn } from "@/lib/utils";
+import { useDebouncedSearchParam } from "@/hooks/use-debounced-search-param";
 
 type EntityFilter = "ALL" | "PHARMACY" | "EXTERNAL_WAREHOUSE";
 
@@ -21,7 +22,13 @@ export function DebtsFilters({ governorates }: DebtsFiltersProps) {
   const router = useRouter();
   const pathname = usePathname();
   const searchParams = useSearchParams();
-  const [isPending, startTransition] = useTransition();
+  const [isFilterPending, startTransition] = useTransition();
+  const {
+    searchInput,
+    setSearchInput,
+    isPending: isSearchPending,
+  } = useDebouncedSearchParam({ paramName: "q", delay: 350 });
+  const isPending = isFilterPending || isSearchPending;
 
   const governorateId = searchParams.get("governorateId") ?? "";
   const rawEntityType = searchParams.get("entityType");
@@ -32,13 +39,6 @@ export function DebtsFilters({ governorates }: DebtsFiltersProps) {
     : "ALL";
   const onlyDebt = searchParams.get("onlyDebt") !== "0";
   const urlQuery = searchParams.get("q") ?? "";
-
-  const [query, setQuery] = useState(urlQuery);
-
-  // Keep the input in sync when the URL changes externally (reset / back / forward).
-  useEffect(() => {
-    setQuery(urlQuery);
-  }, [urlQuery]);
 
   const updateParams = useCallback(
     (mutate: (params: URLSearchParams) => void) => {
@@ -54,21 +54,6 @@ export function DebtsFilters({ governorates }: DebtsFiltersProps) {
     },
     [pathname, router, searchParams]
   );
-
-  // Debounce name search so we don't hit the server on every keystroke.
-  useEffect(() => {
-    const nextQuery = query.trim();
-    if (nextQuery === urlQuery) return;
-
-    const timer = setTimeout(() => {
-      updateParams((params) => {
-        if (nextQuery) params.set("q", nextQuery);
-        else params.delete("q");
-      });
-    }, 400);
-
-    return () => clearTimeout(timer);
-  }, [query, urlQuery, updateParams]);
 
   const handleGovernorateChange = (
     event: React.ChangeEvent<HTMLSelectElement>
@@ -98,7 +83,7 @@ export function DebtsFilters({ governorates }: DebtsFiltersProps) {
   };
 
   const resetFilters = () => {
-    setQuery("");
+    setSearchInput("");
     startTransition(() => {
       router.replace(pathname, { scroll: false });
     });
@@ -172,16 +157,16 @@ export function DebtsFilters({ governorates }: DebtsFiltersProps) {
               <input
                 id="debts-search"
                 type="text"
-                value={query}
-                onChange={(event) => setQuery(event.target.value)}
+                value={searchInput}
+                onChange={(event) => setSearchInput(event.target.value)}
                 placeholder="ابحث باسم الصيدلية أو الشركة..."
                 className="form-input pr-9 pl-9"
                 dir="rtl"
               />
-              {query && (
+              {searchInput && (
                 <button
                   type="button"
-                  onClick={() => setQuery("")}
+                  onClick={() => setSearchInput("")}
                   aria-label="مسح البحث"
                   className="absolute left-3 top-1/2 -translate-y-1/2 text-muted-foreground transition-colors hover:text-foreground"
                 >

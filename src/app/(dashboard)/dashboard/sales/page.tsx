@@ -50,7 +50,7 @@ export default async function SalesPage({ searchParams }: PageProps) {
     pharmacyId: searchParams.clientId || undefined,
     from: searchParams.from ? new Date(searchParams.from) : undefined,
     to: searchParams.to ? new Date(searchParams.to + "T23:59:59") : undefined,
-    query: searchParams.query || undefined,
+    query: searchParams.query?.trim() || undefined,
     take: 100,
   };
 

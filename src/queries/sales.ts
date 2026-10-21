@@ -34,6 +34,7 @@ export async function getInvoices(filters?: {
           { invoiceNumber: { contains: query, mode: "insensitive" as const } },
           { pharmacy: { name: { contains: query, mode: "insensitive" as const } } },
           { salesRep: { name: { contains: query, mode: "insensitive" as const } } },
+          { notes: { contains: query, mode: "insensitive" as const } },
         ],
       }
     : {};
@@ -50,7 +51,6 @@ export async function getInvoices(filters?: {
     include: {
       pharmacy: { select: { name: true, governorate: { select: { name: true } } } },
       salesRep: { select: { name: true } },
-      items: true,
     },
     orderBy: { invoiceDate: "desc" },
     take,
