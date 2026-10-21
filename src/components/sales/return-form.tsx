@@ -1,7 +1,7 @@
 "use client";
 
 import { useState } from "react";
-import { useForm, useFieldArray } from "react-hook-form";
+import { useForm, useFieldArray, useWatch } from "react-hook-form";
 import { zodResolver } from "@hookform/resolvers/zod";
 import { processInvoiceReturn } from "@/actions/returns";
 import { Undo2, Plus, Trash2, X } from "lucide-react";
@@ -19,7 +19,11 @@ const ReturnItemSchema = z.object({
 const LegacyReturnItemSchema = z.object({
   productId: z.string().min(1, "اختر المنتج"),
   quantity: z.coerce.number().positive("الكمية يجب أن تكون أكبر من 0"),
-  unitPrice: z.coerce.number().positive("سعر الوحدة يجب أن يكون أكبر من 0"),
+  basePrice: z.coerce.number().min(0, "السعر يجب أن يكون 0 أو أكبر"),
+  discountPercent: z.coerce
+    .number()
+    .min(0, "الخصم يجب أن يكون 0 أو أكبر")
+    .max(100, "الخصم لا يمكن أن يتجاوز 100%"),
 });
 
 export const ProcessReturnSchema = z.object({
@@ -31,6 +35,13 @@ export const ProcessReturnSchema = z.object({
 });
 
 type ReturnFormData = z.input<typeof ProcessReturnSchema>;
+
+/** Net unit price after applying a percentage discount. */
+function calculateNetPrice(basePrice: unknown, discountPercent: unknown) {
+  const base = Math.max(0, Number(basePrice) || 0);
+  const discount = Math.min(100, Math.max(0, Number(discountPercent) || 0));
+  return Number((base * (1 - discount / 100)).toFixed(2));
+}
 
 export interface ProductOption {
   id: string;
@@ -92,11 +103,15 @@ export function ReturnForm({
     name: "legacyItems",
   });
 
-  const watchLegacyItems = form.watch("legacyItems") || [];
-  const legacyTotalReturn = watchLegacyItems.reduce(
-    (sum, item) => sum + (Number(item?.quantity) || 0) * (Number(item?.unitPrice) || 0),
-    0
-  );
+  const watchLegacyItems = useWatch({
+    control: form.control,
+    name: "legacyItems",
+    defaultValue: [],
+  }) || [];
+  const legacyTotalReturn = watchLegacyItems.reduce((sum, item) => {
+    const netPrice = calculateNetPrice(item?.basePrice, item?.discountPercent);
+    return sum + (Number(item?.quantity) || 0) * netPrice;
+  }, 0);
 
   const onSubmit = async (data: ReturnFormData) => {
     setServerError(null);
@@ -117,7 +132,15 @@ export function ReturnForm({
       reason: data.reason,
       notes: data.notes,
       items: (!isLegacy && data.items ? data.items : []),
-      legacyItems: (isLegacy && data.legacyItems ? data.legacyItems : []),
+      legacyItems: isLegacy && data.legacyItems
+        ? data.legacyItems.map((item) => ({
+            productId: item.productId,
+            quantity: item.quantity,
+            // The discounted (net) price is the official unit price used for
+            // debt deduction and account-statement entries.
+            unitPrice: calculateNetPrice(item.basePrice, item.discountPercent),
+          }))
+        : [],
     });
 
     if (result.success) {
@@ -148,7 +171,7 @@ export function ReturnForm({
       {isOpen &&
         createPortal(
           <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/50" dir="rtl">
-            <div className="bg-card w-[95vw] max-w-2xl max-h-[90vh] overflow-y-auto rounded-2xl shadow-xl border border-border">
+            <div className="bg-card w-[95vw] max-w-4xl max-h-[90vh] overflow-y-auto rounded-2xl shadow-xl border border-border">
               <div className="flex justify-between items-center p-5 border-b border-border">
                 <div>
                   <h2 className="font-semibold text-lg flex items-center gap-2">
@@ -191,7 +214,8 @@ export function ReturnForm({
                               appendLegacy({
                                 productId: allProducts[0].id,
                                 quantity: 1,
-                                unitPrice: Number(allProducts[0].price) || 0,
+                                basePrice: Number(allProducts[0].price) || 0,
+                                discountPercent: 0,
                               });
                             }
                           }}
@@ -211,7 +235,8 @@ export function ReturnForm({
                                 appendLegacy({
                                   productId: allProducts[0].id,
                                   quantity: 1,
-                                  unitPrice: Number(allProducts[0].price) || 0,
+                                  basePrice: Number(allProducts[0].price) || 0,
+                                  discountPercent: 0,
                                 });
                               }
                             }}
@@ -223,66 +248,49 @@ export function ReturnForm({
                       )}
 
                       {legacyFields.map((field, index) => {
-                        const lineQty = Number(watchLegacyItems[index]?.quantity) || 0;
-                        const linePrice = Number(watchLegacyItems[index]?.unitPrice) || 0;
-                        const lineTotal = lineQty * linePrice;
+                        const quantity = Number(watchLegacyItems[index]?.quantity) || 0;
+                        const basePrice = Number(watchLegacyItems[index]?.basePrice) || 0;
+                        const discountPercent =
+                          Number(watchLegacyItems[index]?.discountPercent) || 0;
+                        const netPrice = calculateNetPrice(basePrice, discountPercent);
+                        const lineTotal = quantity * netPrice;
 
                         return (
                           <div
                             key={field.id}
-                            className="grid grid-cols-12 gap-3 items-end bg-muted/20 p-3 rounded-lg border border-border/50"
+                            className="bg-muted/20 p-3.5 rounded-xl border border-border/60 space-y-3"
                           >
-                            {/* Product */}
-                            <div className="col-span-12 sm:col-span-5 space-y-1">
-                              <label className="text-xs font-medium">المنتج</label>
-                              <select
-                                className="flex h-9 w-full rounded-md border border-input bg-transparent px-3 py-1 text-sm focus:outline-none focus:ring-1 focus:ring-primary/50"
-                                {...form.register(`legacyItems.${index}.productId`)}
-                                onChange={(e) => {
-                                  form.register(`legacyItems.${index}.productId`).onChange(e);
-                                  const sel = allProducts.find((p) => p.id === e.target.value);
-                                  if (sel?.price) {
-                                    form.setValue(`legacyItems.${index}.unitPrice`, Number(sel.price));
-                                  }
-                                }}
-                              >
-                                {allProducts.map((p) => (
-                                  <option key={p.id} value={p.id}>
-                                    {p.name}
-                                  </option>
-                                ))}
-                              </select>
-                            </div>
+                            {/* Row 1: product selector + delete */}
+                            <div className="flex items-end gap-2">
+                              <div className="flex-1 min-w-0 space-y-1">
+                                <label className="text-xs font-medium">المنتج</label>
+                                <select
+                                  className="flex h-10 w-full rounded-md border border-input bg-transparent px-3 py-1 text-sm focus:outline-none focus:ring-1 focus:ring-primary/50"
+                                  {...form.register(`legacyItems.${index}.productId`)}
+                                  onChange={(e) => {
+                                    form.register(`legacyItems.${index}.productId`).onChange(e);
+                                    const sel = allProducts.find((p) => p.id === e.target.value);
+                                    if (sel) {
+                                      form.setValue(
+                                        `legacyItems.${index}.basePrice`,
+                                        Number(sel.price) || 0,
+                                        { shouldValidate: true }
+                                      );
+                                      form.setValue(`legacyItems.${index}.discountPercent`, 0);
+                                    }
+                                  }}
+                                >
+                                  {allProducts.map((p) => (
+                                    <option key={p.id} value={p.id}>
+                                      {p.name}
+                                    </option>
+                                  ))}
+                                </select>
+                              </div>
 
-                            {/* Quantity */}
-                            <div className="col-span-4 sm:col-span-3 space-y-1">
-                              <label className="text-xs font-medium">الكمية</label>
-                              <input
-                                type="number"
-                                min={0.001}
-                                step="any"
-                                className="flex h-9 w-full rounded-md border border-input bg-transparent px-3 py-1 text-sm text-center focus:outline-none focus:ring-1 focus:ring-primary/50"
-                                {...form.register(`legacyItems.${index}.quantity`, { valueAsNumber: true })}
-                              />
-                            </div>
-
-                            {/* Unit Price */}
-                            <div className="col-span-5 sm:col-span-3 space-y-1">
-                              <label className="text-xs font-medium">السعر (ج.م)</label>
-                              <input
-                                type="number"
-                                min={0.01}
-                                step="0.01"
-                                className="flex h-9 w-full rounded-md border border-input bg-transparent px-3 py-1 text-sm text-center focus:outline-none focus:ring-1 focus:ring-primary/50"
-                                {...form.register(`legacyItems.${index}.unitPrice`, { valueAsNumber: true })}
-                              />
-                            </div>
-
-                            {/* Remove button */}
-                            <div className="col-span-3 sm:col-span-1 flex justify-center pb-0.5">
                               <button
                                 type="button"
-                                className="h-9 w-9 flex justify-center items-center rounded-lg text-red-500 hover:bg-red-50"
+                                className="h-10 w-10 shrink-0 flex justify-center items-center rounded-lg text-red-500 hover:bg-red-50 dark:hover:bg-red-900/20 transition-colors"
                                 onClick={() => removeLegacy(index)}
                                 title="حذف"
                               >
@@ -290,11 +298,60 @@ export function ReturnForm({
                               </button>
                             </div>
 
-                            {lineTotal > 0 && (
-                              <div className="col-span-12 text-left text-xs text-muted-foreground pt-1">
-                                إجمالي الصنف: <span className="font-bold text-foreground">{formatCurrency(lineTotal.toString())}</span>
+                            {/* Row 2: quantity, base price, discount, net price */}
+                            <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
+                              <div className="space-y-1">
+                                <label className="text-xs font-medium">الكمية</label>
+                                <input
+                                  type="number"
+                                  min={0.001}
+                                  step="any"
+                                  className="flex h-10 w-full rounded-md border border-input bg-transparent px-3 py-1 text-sm text-center focus:outline-none focus:ring-1 focus:ring-primary/50"
+                                  {...form.register(`legacyItems.${index}.quantity`, { valueAsNumber: true })}
+                                />
                               </div>
-                            )}
+
+                              <div className="space-y-1">
+                                <label className="text-xs font-medium">السعر (ج.م)</label>
+                                <input
+                                  type="number"
+                                  min={0}
+                                  step="0.01"
+                                  className="flex h-10 w-full rounded-md border border-input bg-transparent px-3 py-1 text-sm text-center focus:outline-none focus:ring-1 focus:ring-primary/50"
+                                  {...form.register(`legacyItems.${index}.basePrice`, { valueAsNumber: true })}
+                                />
+                              </div>
+
+                              <div className="space-y-1">
+                                <label className="text-xs font-medium">الخصم (%)</label>
+                                <input
+                                  type="number"
+                                  min={0}
+                                  max={100}
+                                  step="0.01"
+                                  className="flex h-10 w-full rounded-md border border-input bg-transparent px-3 py-1 text-sm text-center focus:outline-none focus:ring-1 focus:ring-primary/50"
+                                  {...form.register(`legacyItems.${index}.discountPercent`, { valueAsNumber: true })}
+                                />
+                              </div>
+
+                              <div className="space-y-1">
+                                <label className="text-xs font-medium">السعر بعد الخصم (ج.م)</label>
+                                <input
+                                  type="number"
+                                  readOnly
+                                  tabIndex={-1}
+                                  value={netPrice}
+                                  className="flex h-10 w-full rounded-md border border-amber-200 dark:border-amber-800 bg-amber-50 dark:bg-amber-900/20 px-3 py-1 text-sm text-center font-bold text-amber-800 dark:text-amber-300 focus:outline-none"
+                                />
+                              </div>
+                            </div>
+
+                            <div className="flex items-center justify-between gap-3 pt-2 border-t border-border/50">
+                              <span className="text-xs text-muted-foreground">إجمالي الصنف</span>
+                              <span className="text-sm font-bold text-foreground">
+                                {formatCurrency(lineTotal.toString())}
+                              </span>
+                            </div>
                           </div>
                         );
                       })}

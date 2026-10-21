@@ -82,7 +82,7 @@ export default async function InvoiceDetailPage({ params }: Props) {
   }));
 
   return (
-    <div className="max-w-5xl mx-auto print:max-w-full">
+    <div className="max-w-7xl mx-auto print:max-w-full">
       {/* Non-printable Navigation */}
       <div className="print:hidden">
         <nav className="flex items-center gap-2 text-sm text-muted-foreground mb-5">
@@ -112,9 +112,9 @@ export default async function InvoiceDetailPage({ params }: Props) {
         </div>
       </div>
 
-      <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
+      <div className="grid grid-cols-1 xl:grid-cols-5 gap-6 xl:gap-8 print:block">
         {/* Main Invoice Document (Printable) */}
-        <div className="lg:col-span-2 space-y-6">
+        <div className="xl:col-span-3 space-y-6">
           <div className="bg-card border border-border rounded-xl p-8 print:border print:border-gray-300 print:shadow-none print:p-0 print:rounded-none">
             {/* Print Header */}
             <div className="flex justify-between items-start mb-8 pb-6 border-b border-border/50">
@@ -290,7 +290,7 @@ export default async function InvoiceDetailPage({ params }: Props) {
         </div>
 
         {/* Sidebar: Payments & Actions (Non-printable) */}
-        <div className="space-y-6 print:hidden">
+        <div className="xl:col-span-2 space-y-6 print:hidden">
           
           {/* Payment Form (Only if remaining balance > 0) */}
           <PaymentForm

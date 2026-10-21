@@ -139,21 +139,22 @@ export async function getSalesRepById(id: string) {
 
 // ─── Analytics Helpers ────────────────────────────────────────
 
-export async function getSalesStats() {
-  const today = new Date();
-  today.setHours(0, 0, 0, 0);
+/**
+ * Lightweight stats for pages (like the dashboard) that only need the current
+ * month's revenue and the outstanding receivables. Keeping this separate from
+ * `getSalesStats` avoids the extra "today" aggregate — important when several
+ * dashboard queries are already running against a small connection pool.
+ */
+export async function getMonthlySalesStats() {
+  const monthStart = new Date();
+  monthStart.setDate(1);
+  monthStart.setHours(0, 0, 0, 0);
 
-  const [todayInvoices, monthInvoices, totalReceivables] = await Promise.all([
-    // Today's total
-    prisma.invoice.aggregate({
-      where: { invoiceDate: { gte: today }, status: { not: InvoiceStatus.DRAFT }, isLegacy: false },
-      _sum: { total: true },
-      _count: true,
-    }),
+  const [monthInvoices, totalReceivables] = await Promise.all([
     // This month's total
     prisma.invoice.aggregate({
       where: {
-        invoiceDate: { gte: new Date(today.getFullYear(), today.getMonth(), 1) },
+        invoiceDate: { gte: monthStart },
         status: { not: InvoiceStatus.DRAFT },
         isLegacy: false,
       },
@@ -167,9 +168,32 @@ export async function getSalesStats() {
   ]);
 
   return {
-    todayTotal: todayInvoices._sum.total ?? 0,
-    todayCount: todayInvoices._count,
     monthTotal: monthInvoices._sum.total ?? 0,
     totalReceivables: totalReceivables._sum.remainingAmount ?? 0,
+  };
+}
+
+/**
+ * Today + month + receivables. Runs three queries in parallel; prefer
+ * `getMonthlySalesStats()` when the "today" numbers are not needed.
+ */
+export async function getSalesStats() {
+  const today = new Date();
+  today.setHours(0, 0, 0, 0);
+
+  const [todayInvoices, monthlyStats] = await Promise.all([
+    // Today's total
+    prisma.invoice.aggregate({
+      where: { invoiceDate: { gte: today }, status: { not: InvoiceStatus.DRAFT }, isLegacy: false },
+      _sum: { total: true },
+      _count: true,
+    }),
+    getMonthlySalesStats(),
+  ]);
+
+  return {
+    todayTotal: todayInvoices._sum.total ?? 0,
+    todayCount: todayInvoices._count,
+    ...monthlyStats,
   };
 }

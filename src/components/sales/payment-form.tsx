@@ -1,12 +1,12 @@
 "use client";
 
-import { useState, useTransition } from "react";
+import { useEffect, useState, useTransition } from "react";
 import { useRouter } from "next/navigation";
-import { useForm, useFieldArray, useWatch, Controller } from "react-hook-form";
+import { useForm } from "react-hook-form";
 import { zodResolver } from "@hookform/resolvers/zod";
 import { z } from "zod";
 import { recordInvoicePayment } from "@/actions/sales";
-import { Banknote, Loader2, DollarSign, Package, CheckCircle2 } from "lucide-react";
+import { Banknote, Loader2, DollarSign, Package, CheckCircle2, Plus, Trash2 } from "lucide-react";
 import { cn, formatCurrency } from "@/lib/utils";
 
 // ─── Types ────────────────────────────────────────────────────
@@ -33,8 +33,10 @@ export interface ProductOption {
 
 interface LegacyTargetItemInput {
   productId: string;
-  quantity: number;
-  price: number;
+  quantity: number | string;
+  basePrice: number | string;
+  discountPercent: number | string;
+  netPrice: number;
 }
 
 interface Props {
@@ -86,6 +88,27 @@ const METHOD_LABELS: Record<string, string> = {
   CHECK: "شيك",
 };
 
+/** Net unit price after applying a percentage discount. */
+function calculateNetPrice(
+  basePrice: number | string,
+  discountPercent: number | string
+) {
+  const base = Math.max(0, Number(basePrice) || 0);
+  const discount = Math.min(100, Math.max(0, Number(discountPercent) || 0));
+  return Number((base * (1 - discount / 100)).toFixed(2));
+}
+
+function createTargetItem(product: ProductOption): LegacyTargetItemInput {
+  const basePrice = Number(product.price) || 0;
+  return {
+    productId: product.id,
+    quantity: 1,
+    basePrice,
+    discountPercent: 0,
+    netPrice: basePrice,
+  };
+}
+
 // ─── Component ────────────────────────────────────────────────
 
 export function PaymentForm({
@@ -105,6 +128,27 @@ export function PaymentForm({
   const [targetSalesRepId, setTargetSalesRepId] = useState<string>("");
   const [targetItems, setTargetItems] = useState<LegacyTargetItemInput[]>([]);
 
+  const targetItemsTotal = targetItems.reduce(
+    (sum, item) => sum + (Number(item.quantity) || 0) * (Number(item.netPrice) || 0),
+    0
+  );
+
+  const updateTargetItem = (
+    index: number,
+    patch: Partial<Omit<LegacyTargetItemInput, "netPrice">>
+  ) => {
+    setTargetItems((prev) =>
+      prev.map((item, i) => {
+        if (i !== index) return item;
+        const next = { ...item, ...patch };
+        return {
+          ...next,
+          netPrice: calculateNetPrice(next.basePrice, next.discountPercent),
+        };
+      })
+    );
+  };
+
   // ─── Flat payment form ────────────────────────────────────
   const flatForm = useForm<z.infer<typeof FlatPaymentSchema>>({
     resolver: zodResolver(FlatPaymentSchema),
@@ -112,6 +156,22 @@ export function PaymentForm({
   });
   const watchFlatAmount = flatForm.watch("amount") || 0;
   const isOverFlat = watchFlatAmount > remainingAmount + 0.01;
+
+  // Auto-sync the payment amount with the target items total (net of discounts)
+  // whenever the target items section is enabled and its values change.
+  useEffect(() => {
+    if (!isLegacy || !includeTargetItems) return;
+    const total = targetItems.reduce(
+      (sum, item) => sum + (Number(item.quantity) || 0) * (Number(item.netPrice) || 0),
+      0
+    );
+    // Never exceed the outstanding balance — the server rejects overpayments.
+    const syncedAmount = Math.min(total, remainingAmount);
+    flatForm.setValue("amount", Number(syncedAmount.toFixed(2)), {
+      shouldValidate: true,
+      shouldDirty: true,
+    });
+  }, [isLegacy, includeTargetItems, targetItems, remainingAmount, flatForm]);
 
   // ─── Itemized payment form ─────────────────────────────────
   const itemizedForm = useForm<z.infer<typeof ItemizedPaymentSchema>>({
@@ -158,7 +218,7 @@ export function PaymentForm({
               .map((ti) => ({
                 productId: ti.productId,
                 quantity: Number(ti.quantity),
-                price: Number(ti.price) || 0,
+                price: Number(ti.netPrice) || 0,
               }))
           : undefined;
 
@@ -218,10 +278,10 @@ export function PaymentForm({
   };
 
   return (
-    <div className="bg-card border border-border rounded-xl p-5">
+    <div className="bg-card border border-border rounded-2xl p-6">
       {/* Header */}
-      <div className="flex items-center justify-between mb-4">
-        <h2 className="font-semibold text-sm flex items-center gap-2">
+      <div className="flex items-center justify-between mb-4 gap-3 flex-wrap">
+        <h2 className="font-semibold text-base flex items-center gap-2">
           <Banknote className="w-4 h-4 text-green-600" />
           {isLegacy ? "سداد مديونية سابقة" : "تسجيل دفعة (سداد)"}
           {isLegacy && (
@@ -329,27 +389,23 @@ export function PaymentForm({
 
           {/* LEGACY DEBT: Target items selection for Sales Rep */}
           {isLegacy && (
-            <div className="p-4 rounded-xl border border-amber-200 dark:border-amber-900/40 bg-amber-50/50 dark:bg-amber-900/10 space-y-3">
-              <div className="flex items-center justify-between">
-                <label className="flex items-center gap-2 cursor-pointer select-none">
+            <div className="p-5 sm:p-6 rounded-2xl border-2 border-amber-200 dark:border-amber-900/40 bg-amber-50/60 dark:bg-amber-900/10 space-y-4">
+              <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+                <label className="flex items-start sm:items-center gap-2.5 cursor-pointer select-none">
                   <input
                     type="checkbox"
                     checked={includeTargetItems}
+                    disabled={allProducts.length === 0}
                     onChange={(e) => {
-                      setIncludeTargetItems(e.target.checked);
-                      if (e.target.checked && targetItems.length === 0 && allProducts.length > 0) {
-                        setTargetItems([
-                          {
-                            productId: allProducts[0].id,
-                            quantity: 1,
-                            price: Number(allProducts[0].price) || 0,
-                          },
-                        ]);
+                      const checked = e.target.checked;
+                      setIncludeTargetItems(checked);
+                      if (checked && targetItems.length === 0 && allProducts.length > 0) {
+                        setTargetItems([createTargetItem(allProducts[0])]);
                       }
                     }}
-                    className="w-4 h-4 rounded border-amber-300 text-amber-600 focus:ring-amber-500"
+                    className="mt-0.5 sm:mt-0 w-4 h-4 rounded border-amber-300 text-amber-600 focus:ring-amber-500"
                   />
-                  <span className="text-xs font-bold text-amber-900 dark:text-amber-300">
+                  <span className="text-sm font-bold text-amber-900 dark:text-amber-300 leading-6">
                     🎯 احتساب أصناف لمستهدف المندوب (اختياري - بدون مساس بالمخزون)
                   </span>
                 </label>
@@ -358,39 +414,36 @@ export function PaymentForm({
                     type="button"
                     onClick={() => {
                       if (allProducts.length > 0) {
-                        setTargetItems([
-                          ...targetItems,
-                          {
-                            productId: allProducts[0].id,
-                            quantity: 1,
-                            price: Number(allProducts[0].price) || 0,
-                          },
+                        setTargetItems((prev) => [
+                          ...prev,
+                          createTargetItem(allProducts[0]),
                         ]);
                       }
                     }}
-                    className="text-xs text-amber-700 dark:text-amber-400 font-semibold hover:underline flex items-center gap-1"
+                    className="inline-flex items-center justify-center gap-1.5 h-10 px-4 rounded-xl border border-amber-300 dark:border-amber-700 bg-card text-sm text-amber-700 dark:text-amber-400 font-semibold hover:bg-amber-100 dark:hover:bg-amber-900/30 transition-colors"
                   >
-                    + إضافة صنف
+                    <Plus className="w-4 h-4" />
+                    إضافة صنف
                   </button>
                 )}
               </div>
 
               {includeTargetItems && (
-                <div className="space-y-3 mt-3 pt-3 border-t border-amber-200/60 dark:border-amber-900/40">
-                  <div className="space-y-1.5 bg-card/60 p-3 rounded-lg border border-amber-200/80 dark:border-amber-900/50">
-                    <label className="text-xs font-bold text-amber-950 dark:text-amber-200 flex items-center justify-between">
+                <div className="space-y-4 mt-1 pt-4 border-t border-amber-200/70 dark:border-amber-900/40">
+                  <div className="space-y-2 bg-card/70 p-4 rounded-xl border border-amber-200/80 dark:border-amber-900/50">
+                    <label className="text-sm font-bold text-amber-950 dark:text-amber-200 flex flex-wrap items-center justify-between gap-2">
                       <span className="flex items-center gap-1.5">
                         <span>اختر المندوب المستفيد من التارجت</span>
                         <span className="text-red-500 font-bold">*</span>
                       </span>
                       {salesReps.length === 0 && (
-                        <span className="text-[11px] text-red-500 font-normal">لا يوجد مناديب متاحين</span>
+                        <span className="text-xs text-red-500 font-normal">لا يوجد مناديب متاحين</span>
                       )}
                     </label>
                     <select
                       value={targetSalesRepId}
                       onChange={(e) => setTargetSalesRepId(e.target.value)}
-                      className="w-full px-3 py-2 rounded-lg border border-amber-300 dark:border-amber-700 bg-background text-xs font-medium focus:outline-none focus:ring-2 focus:ring-amber-500"
+                      className="w-full h-10 px-3 rounded-lg border border-amber-300 dark:border-amber-700 bg-background text-sm font-medium focus:outline-none focus:ring-2 focus:ring-amber-500"
                       required
                     >
                       <option value="">-- اختر المندوب المستفيد من التارجت --</option>
@@ -402,107 +455,168 @@ export function PaymentForm({
                     </select>
                   </div>
 
-                  <p className="text-[11px] text-amber-700/80 dark:text-amber-500/80">
+                  <p className="text-xs leading-5 text-amber-700/90 dark:text-amber-500/90">
                     هذه الأصناف تُستخدم حصرياً لحساب نسبة تحقيق مستهدف المندوب المحدد لهذا السداد ولا تؤثر إطلاقاً على المخزون.
                   </p>
-                  {targetItems.map((ti, idx) => (
-                    <div
-                      key={idx}
-                      className="grid grid-cols-12 gap-2 items-center bg-card p-2.5 rounded-lg border border-amber-200/60 dark:border-amber-900/30 text-xs"
-                    >
-                      <div className="col-span-5">
-                        <label className="text-[10px] text-muted-foreground block mb-0.5">المنتج</label>
-                        <select
-                          value={ti.productId}
-                          onChange={(e) => {
-                            const selProd = allProducts.find((p) => p.id === e.target.value);
-                            const updated = [...targetItems];
-                            updated[idx] = {
-                              ...updated[idx],
-                              productId: e.target.value,
-                              price: Number(selProd?.price) || updated[idx].price,
-                            };
-                            setTargetItems(updated);
-                          }}
-                          className="w-full p-1.5 rounded-md border text-xs bg-background"
-                        >
-                          {allProducts.map((p) => (
-                            <option key={p.id} value={p.id}>
-                              {p.name}
-                            </option>
-                          ))}
-                        </select>
-                      </div>
-                      <div className="col-span-3">
-                        <label className="text-[10px] text-muted-foreground block mb-0.5">الكمية</label>
-                        <input
-                          type="number"
-                          min={1}
-                          value={ti.quantity}
-                          onChange={(e) => {
-                            const val = parseFloat(e.target.value) || 0;
-                            const updated = [...targetItems];
-                            updated[idx] = { ...updated[idx], quantity: val };
-                            setTargetItems(updated);
-                          }}
-                          className="w-full p-1.5 rounded-md border text-xs text-center bg-background"
-                        />
-                      </div>
-                      <div className="col-span-3">
-                        <label className="text-[10px] text-muted-foreground block mb-0.5">السعر (ج.م)</label>
-                        <input
-                          type="number"
-                          min={0}
-                          step="0.01"
-                          value={ti.price}
-                          onChange={(e) => {
-                            const val = parseFloat(e.target.value) || 0;
-                            const updated = [...targetItems];
-                            updated[idx] = { ...updated[idx], price: val };
-                            setTargetItems(updated);
-                          }}
-                          className="w-full p-1.5 rounded-md border text-xs text-center bg-background"
-                        />
-                      </div>
-                      <div className="col-span-1 flex justify-center pt-3">
-                        <button
-                          type="button"
-                          onClick={() => setTargetItems(targetItems.filter((_, i) => i !== idx))}
-                          className="text-red-500 hover:text-red-700 text-sm font-bold"
-                          title="حذف"
-                        >
-                          ✕
-                        </button>
-                      </div>
-                    </div>
-                  ))}
-                  {targetItems.length > 0 && (
-                    <div className="flex items-center justify-between pt-1 text-xs text-amber-800 dark:text-amber-400 font-medium">
-                      <span>
-                        إجمالي قيمة الأصناف:{" "}
-                        <span className="font-bold">
-                          {formatCurrency(
-                            targetItems
-                              .reduce((sum, i) => sum + (i.quantity || 0) * (i.price || 0), 0)
-                              .toString()
-                          )}
-                        </span>
-                      </span>
-                      <button
-                        type="button"
-                        onClick={() => {
-                          const totalVal = targetItems.reduce(
-                            (sum, i) => sum + (i.quantity || 0) * (i.price || 0),
-                            0
-                          );
-                          flatForm.setValue("amount", Math.min(totalVal, remainingAmount));
-                        }}
-                        className="text-[11px] underline text-primary hover:text-primary/80"
+
+                  {targetItems.map((ti, idx) => {
+                    const lineTotal =
+                      (Number(ti.quantity) || 0) * (Number(ti.netPrice) || 0);
+
+                    return (
+                      <div
+                        key={idx}
+                        className="bg-card p-4 rounded-xl border border-amber-200/70 dark:border-amber-900/40 space-y-3"
                       >
-                        مزامنة مع مبلغ السداد
-                      </button>
+                        {/* Row 1: product selector + delete */}
+                        <div className="flex items-end gap-2">
+                          <div className="flex-1 min-w-0 space-y-1.5">
+                            <label className="text-xs font-semibold text-muted-foreground block">
+                              المنتج
+                            </label>
+                            <select
+                              value={ti.productId}
+                              onChange={(e) => {
+                                const selProd = allProducts.find((p) => p.id === e.target.value);
+                                updateTargetItem(idx, {
+                                  productId: e.target.value,
+                                  basePrice: Number(selProd?.price) || 0,
+                                  discountPercent: 0,
+                                });
+                              }}
+                              className="w-full h-10 px-3 rounded-lg border border-border bg-background text-sm focus:outline-none focus:ring-2 focus:ring-amber-500/40"
+                            >
+                              {allProducts.map((p) => (
+                                <option key={p.id} value={p.id}>
+                                  {p.name}
+                                </option>
+                              ))}
+                            </select>
+                          </div>
+                          <button
+                            type="button"
+                            onClick={() =>
+                              setTargetItems((prev) => prev.filter((_, i) => i !== idx))
+                            }
+                            className="h-10 w-10 shrink-0 flex items-center justify-center rounded-lg text-red-500 hover:bg-red-50 dark:hover:bg-red-900/20 transition-colors"
+                            title="حذف"
+                          >
+                            <Trash2 className="w-4 h-4" />
+                          </button>
+                        </div>
+
+                        {/* Row 2: quantity, base price, discount, net price */}
+                        <div className="grid grid-cols-2 xl:grid-cols-4 gap-3">
+                          <div className="space-y-1.5">
+                            <label className="text-xs font-semibold text-muted-foreground block">
+                              الكمية
+                            </label>
+                            <input
+                              type="number"
+                              min={1}
+                              step={1}
+                              value={ti.quantity}
+                              onChange={(e) =>
+                                updateTargetItem(idx, { quantity: e.target.value })
+                              }
+                              onBlur={(e) =>
+                                updateTargetItem(idx, {
+                                  quantity: Math.max(0, parseFloat(e.target.value) || 0),
+                                })
+                              }
+                              className="w-full h-10 px-2 rounded-lg border border-border bg-background text-sm text-center font-medium focus:outline-none focus:ring-2 focus:ring-amber-500/40"
+                            />
+                          </div>
+                          <div className="space-y-1.5">
+                            <label className="text-xs font-semibold text-muted-foreground block">
+                              السعر (ج.م)
+                            </label>
+                            <input
+                              type="number"
+                              min={0}
+                              step="0.01"
+                              value={ti.basePrice}
+                              onChange={(e) =>
+                                updateTargetItem(idx, { basePrice: e.target.value })
+                              }
+                              onBlur={(e) =>
+                                updateTargetItem(idx, {
+                                  basePrice: Math.max(0, parseFloat(e.target.value) || 0),
+                                })
+                              }
+                              className="w-full h-10 px-2 rounded-lg border border-border bg-background text-sm text-center font-medium focus:outline-none focus:ring-2 focus:ring-amber-500/40"
+                            />
+                          </div>
+                          <div className="space-y-1.5">
+                            <label className="text-xs font-semibold text-muted-foreground block">
+                              الخصم (%)
+                            </label>
+                            <input
+                              type="number"
+                              min={0}
+                              max={100}
+                              step="0.01"
+                              value={ti.discountPercent}
+                              onChange={(e) =>
+                                updateTargetItem(idx, { discountPercent: e.target.value })
+                              }
+                              onBlur={(e) =>
+                                updateTargetItem(idx, {
+                                  discountPercent: Math.min(
+                                    100,
+                                    Math.max(0, parseFloat(e.target.value) || 0)
+                                  ),
+                                })
+                              }
+                              className="w-full h-10 px-2 rounded-lg border border-border bg-background text-sm text-center font-medium focus:outline-none focus:ring-2 focus:ring-amber-500/40"
+                            />
+                          </div>
+                          <div className="space-y-1.5">
+                            <label className="text-xs font-semibold text-muted-foreground block">
+                              السعر بعد الخصم (ج.م)
+                            </label>
+                            <input
+                              type="number"
+                              readOnly
+                              tabIndex={-1}
+                              value={ti.netPrice}
+                              className="w-full h-10 px-2 rounded-lg border border-amber-200 dark:border-amber-800 bg-amber-50/80 dark:bg-amber-900/20 text-sm text-center font-bold text-amber-800 dark:text-amber-300 focus:outline-none"
+                            />
+                          </div>
+                        </div>
+
+                        {/* Item total */}
+                        <div className="flex items-center justify-between gap-3 pt-3 border-t border-amber-100 dark:border-amber-900/30">
+                          <span className="text-xs font-semibold text-muted-foreground">
+                            إجمالي الصنف
+                          </span>
+                          <span className="inline-flex items-center rounded-lg bg-amber-100 dark:bg-amber-900/30 px-3 py-1.5 text-sm font-bold text-amber-900 dark:text-amber-300">
+                            {formatCurrency(lineTotal.toString())}
+                          </span>
+                        </div>
+                      </div>
+                    );
+                  })}
+
+                  <div className="rounded-xl bg-amber-100/80 dark:bg-amber-900/20 border border-amber-200 dark:border-amber-900/40 p-4">
+                    <div className="flex flex-col gap-1 sm:flex-row sm:items-center sm:justify-between">
+                      <span className="text-sm font-semibold text-amber-900 dark:text-amber-300">
+                        إجمالي قيمة الأصناف
+                      </span>
+                      <span className="text-xl font-bold text-amber-900 dark:text-amber-200">
+                        {formatCurrency(targetItemsTotal.toString())}
+                      </span>
                     </div>
-                  )}
+                    <p className="text-[11px] text-amber-700/90 dark:text-amber-500/90 mt-2">
+                      يتم تحديث مبلغ السداد تلقائياً ليطابق إجمالي الأصناف بعد الخصم.
+                    </p>
+                    {targetItemsTotal > remainingAmount && (
+                      <p className="text-[11px] font-medium text-red-600 dark:text-red-400 mt-1">
+                        إجمالي الأصناف يتجاوز المتبقي ({formatCurrency(remainingAmount.toString())})،
+                        تم ضبط مبلغ السداد على الحد الأقصى المتاح.
+                      </p>
+                    )}
+                  </div>
                 </div>
               )}
             </div>

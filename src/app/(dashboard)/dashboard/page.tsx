@@ -4,8 +4,7 @@ import { Skeleton } from "@/components/ui/skeleton";
 import Link from "next/link";
 import { getRequiredSession } from "@/lib/auth-utils";
 import { prisma } from "@/lib/prisma";
-import { getSalesStats } from "@/queries/sales";
-import { getTreasury } from "@/queries/treasury";
+import { getMonthlySalesStats } from "@/queries/sales";
 import { formatCurrency, formatDate, cn } from "@/lib/utils";
 import {
   LayoutDashboard,
@@ -110,84 +109,80 @@ async function DashboardContent({ session }: { session: any }) {
   thirtyDaysAgo.setDate(thirtyDaysAgo.getDate() - 30);
   thirtyDaysAgo.setHours(0, 0, 0, 0);
 
-  // Fetch all dashboard stats in parallel
-  const [
-    salesStats,
-    monthInvoices,
-    monthPayments,
-    productsData,
-    thirtyDayInvoices,
-    recentInvoices,
-    recentPayments,
-    topProductItems,
-  ] = await Promise.all([
-    getSalesStats(),
-    // 1. Total Sales Revenue (Current Month)
-    prisma.invoice.aggregate({
-      where: { invoiceDate: { gte: startOfMonth }, status: { not: "DRAFT" }, isLegacy: false },
-      _sum: { total: true },
-    }),
-    // 2. Total Cash Collected (Current Month)
+  // Keep database concurrency low. Supabase's session pooler can reject
+  // bursts of 10+ simultaneous connections, so run the dashboard reads in
+  // small batches (max 3 queries in flight) and reuse results where possible.
+  const monthlyStats = await getMonthlySalesStats();
+
+  const [monthPayments, productsData, thirtyDayInvoices] = await Promise.all([
+    // 1. Total Cash Collected (Current Month)
     prisma.payment.aggregate({
       where: { paidAt: { gte: startOfMonth } },
       _sum: { amount: true },
     }),
-    // 3. Products for low stock
+    // 2. Products: used for low-stock alerts and top-product names
     prisma.product.findMany({
-      where: { isActive: true },
-      select: { id: true, name: true, reorderLevel: true, stockItems: { select: { quantity: true } } }
+      select: {
+        id: true,
+        name: true,
+        isActive: true,
+        reorderLevel: true,
+        stockItems: { select: { quantity: true } },
+      },
     }),
-    // 4. Sales Trend (Last 30 days)
+    // 3. Sales Trend (Last 30 days)
     prisma.invoice.findMany({
       where: { invoiceDate: { gte: thirtyDaysAgo }, status: { not: "DRAFT" }, isLegacy: false },
-      select: { invoiceDate: true, total: true }
+      select: { invoiceDate: true, total: true },
     }),
-    // 5. Recent Invoices
+  ]);
+
+  const [recentInvoices, recentPayments, topProductItems] = await Promise.all([
+    // 4. Recent Invoices
     prisma.invoice.findMany({
       take: 5,
       orderBy: { invoiceDate: "desc" },
-      include: { pharmacy: { select: { name: true } } }
+      include: { pharmacy: { select: { name: true } } },
     }),
-    // 6. Recent Payments
+    // 5. Recent Payments
     prisma.payment.findMany({
       take: 5,
       orderBy: { paidAt: "desc" },
-      include: { pharmacy: { select: { name: true } } }
+      include: { pharmacy: { select: { name: true } } },
     }),
-    // 7. Top Products
+    // 6. Top Products
     prisma.invoiceItem.groupBy({
-      by: ['productId'],
+      by: ["productId"],
       where: { invoice: { invoiceDate: { gte: startOfMonth }, status: { not: "DRAFT" } } },
       _sum: { lineTotal: true, quantity: true },
-      orderBy: { _sum: { lineTotal: 'desc' } },
+      orderBy: { _sum: { lineTotal: "desc" } },
       take: 5,
     }),
   ]);
 
-  const topProductsWithDetails = await prisma.product.findMany({
-    where: { id: { in: topProductItems.map(p => p.productId) } },
-    select: { id: true, name: true }
-  });
-
-  const topProductsData = topProductItems.map(item => ({
-    name: topProductsWithDetails.find(p => p.id === item.productId)?.name || 'Unknown',
+  // Resolve top-product names from the products already loaded above instead
+  // of issuing another product query.
+  const productNameById = new Map(productsData.map((product) => [product.id, product.name]));
+  const topProductsData = topProductItems.map((item) => ({
+    name: productNameById.get(item.productId) ?? "Unknown",
     revenue: Number(item._sum.lineTotal),
-    quantity: Number(item._sum.quantity)
+    quantity: Number(item._sum.quantity),
   }));
 
-  const salesMonthTotal = Number(monthInvoices._sum.total || 0);
+  const salesMonthTotal = Number(monthlyStats.monthTotal || 0);
   const cashCollectedMonth = Number(monthPayments._sum.amount || 0);
-  const totalReceivables = Number(salesStats.totalReceivables || 0);
+  const totalReceivables = Number(monthlyStats.totalReceivables || 0);
 
   // Calculate low stock products
   const lowStockAlerts = productsData
-    .map(p => ({
+    .filter((p) => p.isActive)
+    .map((p) => ({
       id: p.id,
       name: p.name,
       stock: p.stockItems.reduce((sum, item) => sum + Number(item.quantity), 0),
-      reorderLevel: p.reorderLevel
+      reorderLevel: p.reorderLevel,
     }))
-    .filter(p => p.stock <= p.reorderLevel);
+    .filter((p) => p.stock <= p.reorderLevel);
   const lowStockCount = lowStockAlerts.length;
   const topLowStock = lowStockAlerts.slice(0, 5);
 
