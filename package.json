@@ -12,6 +12,7 @@
     "db:studio": "prisma studio",
     "db:migrate": "prisma migrate dev",
     "db:seed": "tsx prisma/seed.ts",
+    "verify:statements": "tsx scripts/verify-statement-balances.ts",
     "postinstall": "prisma generate"
   },
   "dependencies": {

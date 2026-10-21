@@ -150,15 +150,31 @@ export async function processInvoiceReturn(
           });
         }
 
-        // 3. ACCOUNTING: Deduct return value from invoice remaining balance ONLY.
+        // 3. ACCOUNTING: Deduct the return value from the legacy debt.
         // CRITICAL: This is NOT a treasury cash-in. It's an accounting reduction
-        // of the legacy debt. No money moves to the treasury.
+        // of the legacy obligation. No money moves to the treasury.
+        //
+        // IMPORTANT: If the return is larger than the remaining balance, the
+        // excess becomes a credit balance for the client (negative
+        // currentBalance), exactly like a return on a standard CREDIT invoice.
+        // The statement posts the full return amount as a credit, so the two
+        // sides must use the same rule or the closing balance will drift.
         const currentRemaining = Number(invoice.remainingAmount);
-        const newRemaining = Math.max(0, currentRemaining - totalReturnAmount);
-        const newPaid = Number(invoice.paidAmount);
+        const currentPaid = Number(invoice.paidAmount);
+
+        let newRemaining = currentRemaining;
+        let newPaid = currentPaid;
+        if (totalReturnAmount <= currentRemaining) {
+          newRemaining -= totalReturnAmount;
+        } else {
+          const excess = totalReturnAmount - currentRemaining;
+          newRemaining = 0;
+          newPaid = Math.max(0, currentPaid - excess);
+        }
+
+        const newTotal = Math.max(0, Number(invoice.total) - totalReturnAmount);
 
         let newStatus = invoice.status;
-        const newTotal = Math.max(0, Number(invoice.total) - totalReturnAmount);
         if (newTotal <= 0) {
           newStatus = InvoiceStatus.CANCELLED;
         } else if (newRemaining <= 0.01) {
@@ -171,16 +187,17 @@ export async function processInvoiceReturn(
           where: { id: invoice.id },
           data: {
             total: newTotal,
-            remainingAmount: newRemaining,
+            remainingAmount: Math.max(0, newRemaining),
+            paidAmount: Math.max(0, newPaid),
             status: newStatus,
           },
         });
 
-        // Also reduce the pharmacy's outstanding debt (balance) since the return
-        // effectively cancels part of their legacy obligation
+        // Reduce the client's outstanding debt by the FULL return amount.
+        // Over-returns intentionally produce a negative balance (client credit).
         await tx.pharmacy.update({
           where: { id: invoice.pharmacyId },
-          data: { currentBalance: { decrement: Math.min(totalReturnAmount, currentRemaining) } },
+          data: { currentBalance: { decrement: totalReturnAmount } },
         });
 
         // NOTE: CRITICAL — Returns NEVER affect rep targets.
@@ -281,47 +298,39 @@ export async function processInvoiceReturn(
         });
       }
 
-      // 3. Deduct from Invoice total and adjust balances
+      // 3. Deduct from the invoice and adjust balances
+      //
+      // `invoice.total` is reduced for backward compatibility with the rest of
+      // the app, but the account statement always reconstructs the ORIGINAL
+      // gross amount from `subtotal - discountAmount` (frozen at creation).
+      // Therefore the return is credited exactly once in the statement.
       const currentTotal = Number(invoice.total);
-      const newTotal = currentTotal - totalReturnAmount;
+      const newTotal = Math.max(0, currentTotal - totalReturnAmount);
 
       let newRemaining = Number(invoice.remainingAmount);
       let newPaid = Number(invoice.paidAmount);
 
       if (invoice.type === InvoiceType.CREDIT) {
-        // First deduct from remaining balance
+        // CREDIT return: always reduces the client's receivable balance.
+        // If it exceeds the unpaid remaining amount, the excess becomes a
+        // client credit (negative currentBalance) — never a cash refund here.
         if (totalReturnAmount <= newRemaining) {
           newRemaining -= totalReturnAmount;
-
-          // Also reduce the pharmacy's debt
-          await tx.pharmacy.update({
-            where: { id: invoice.pharmacyId },
-            data: { currentBalance: { decrement: totalReturnAmount } },
-          });
         } else {
-          // The return is bigger than the remaining balance
-          const difference = totalReturnAmount - newRemaining;
-
-          // Reduce pharmacy debt by the remaining amount
-          if (newRemaining > 0) {
-            await tx.pharmacy.update({
-              where: { id: invoice.pharmacyId },
-              data: { currentBalance: { decrement: newRemaining } },
-            });
-          }
-
+          const excess = totalReturnAmount - newRemaining;
           newRemaining = 0;
-          newPaid -= difference;
-
-          // Credit the pharmacy's balance (acts as credit/wallet)
-          await tx.pharmacy.update({
-            where: { id: invoice.pharmacyId },
-            data: { currentBalance: { decrement: difference } },
-          });
+          newPaid = Math.max(0, newPaid - excess);
         }
+
+        await tx.pharmacy.update({
+          where: { id: invoice.pharmacyId },
+          data: { currentBalance: { decrement: totalReturnAmount } },
+        });
       } else {
-        // Cash invoice
-        newPaid -= totalReturnAmount;
+        // CASH invoice: the client already paid in full, so this return is a
+        // cash refund. It must NOT touch currentBalance and must NOT appear as
+        // a debt-reducing credit in the account statement.
+        newPaid = Math.max(0, newPaid - totalReturnAmount);
       }
 
       // Update invoice status

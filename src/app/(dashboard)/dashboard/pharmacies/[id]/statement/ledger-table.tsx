@@ -4,18 +4,37 @@ import { useState, useMemo } from "react";
 import { formatCurrency, formatShortDate } from "@/lib/utils";
 import { FileText, CreditCard, Undo2, Search, TrendingDown, TrendingUp, Scale } from "lucide-react";
 import { cn } from "@/lib/utils";
+import { roundCurrency, type LedgerEntry } from "@/lib/client-ledger";
 
-export type LedgerEntry = {
-  id: string;
-  date: Date;
-  type: "INVOICE" | "PAYMENT" | "RETURN";
-  reference: string;
-  description: string;
-  debit: number;   // increases balance (invoice)
-  credit: number;  // decreases balance (payment / return)
-};
+export type { LedgerEntry } from "@/lib/client-ledger";
 
 type FilterType = "ALL" | "INVOICE" | "PAYMENT" | "RETURN";
+
+const LEDGER_TIME_FORMATTER = new Intl.DateTimeFormat("en-GB", {
+  hour: "2-digit",
+  minute: "2-digit",
+  hour12: false,
+});
+
+function formatLedgerTimestamp(value: Date) {
+  const date = new Date(value);
+  return `${formatShortDate(date)} · ${LEDGER_TIME_FORMATTER.format(date)}`;
+}
+
+function parseLocalDate(value: string, endOfDay = false): Date | null {
+  if (!value) return null;
+  const [year, month, day] = value.split("-").map(Number);
+  if (!year || !month || !day) return null;
+  return new Date(
+    year,
+    month - 1,
+    day,
+    endOfDay ? 23 : 0,
+    endOfDay ? 59 : 0,
+    endOfDay ? 59 : 0,
+    endOfDay ? 999 : 0
+  );
+}
 
 interface Props {
   entries: LedgerEntry[];
@@ -34,19 +53,34 @@ export function LedgerTable({ entries, clientName, openingBalance }: Props) {
   const [endDate, setEndDate] = useState("");
   const [filterType, setFilterType] = useState<FilterType>("ALL");
 
-  // Filter by date range
+  // Filter by the full ledger timestamp (createdAt), not by the document date.
+  // This keeps ordering, filtering and the running balance perfectly aligned.
   const dateFiltered = useMemo(() => {
+    const start = parseLocalDate(startDate);
+    const end = parseLocalDate(endDate, true);
+
     return entries.filter((e) => {
-      const d = new Date(e.date);
-      if (startDate && d < new Date(startDate)) return false;
-      if (endDate) {
-        const end = new Date(endDate);
-        end.setHours(23, 59, 59, 999);
-        if (d > end) return false;
-      }
+      const d = new Date(e.occurredAt);
+      if (start && d < start) return false;
+      if (end && d > end) return false;
       return true;
     });
   }, [entries, startDate, endDate]);
+
+  // Balance carried into the selected period. Without a start date this is the
+  // all-time opening balance; with one, add every entry that happened earlier.
+  const openingForPeriod = useMemo(() => {
+    const start = parseLocalDate(startDate);
+    if (!start) return roundCurrency(openingBalance);
+
+    const movementBeforePeriod = entries.reduce((sum, e) => {
+      return new Date(e.occurredAt) < start
+        ? sum + e.debit - e.credit
+        : sum;
+    }, 0);
+
+    return roundCurrency(openingBalance + movementBeforePeriod);
+  }, [entries, openingBalance, startDate]);
 
   // Filter by type
   const filtered = useMemo(() => {
@@ -56,19 +90,19 @@ export function LedgerTable({ entries, clientName, openingBalance }: Props) {
 
   // Compute running balance using ALL date-filtered entries (regardless of type filter)
   const withBalance = useMemo(() => {
-    let balance = openingBalance;
+    let balance = openingForPeriod;
     const balanceMap = new Map<string, number>();
     for (const e of dateFiltered) {
-      balance += e.debit - e.credit;
+      balance = roundCurrency(balance + e.debit - e.credit);
       balanceMap.set(e.id, balance);
     }
     return balanceMap;
-  }, [dateFiltered, openingBalance]);
+  }, [dateFiltered, openingForPeriod]);
 
   // Summary stats from date-filtered entries
-  const totalDebit = dateFiltered.reduce((s, e) => s + e.debit, 0);
-  const totalCredit = dateFiltered.reduce((s, e) => s + e.credit, 0);
-  const closingBalance = openingBalance + totalDebit - totalCredit;
+  const totalDebit = roundCurrency(dateFiltered.reduce((s, e) => s + e.debit, 0));
+  const totalCredit = roundCurrency(dateFiltered.reduce((s, e) => s + e.credit, 0));
+  const closingBalance = roundCurrency(openingForPeriod + totalDebit - totalCredit);
 
   const inputClass =
     "px-3 py-2 rounded-xl border border-border bg-background text-sm focus:outline-none focus:ring-2 focus:ring-primary/25 focus:border-primary/50 transition-all";
@@ -134,14 +168,14 @@ export function LedgerTable({ entries, clientName, openingBalance }: Props) {
         <div className="bg-gradient-to-br from-blue-500/10 to-blue-600/5 border border-blue-200 dark:border-blue-800/40 rounded-xl p-4">
           <div className="flex items-center gap-2 mb-2">
             <TrendingDown className="w-4 h-4 text-blue-600" />
-            <p className="text-xs font-semibold text-blue-700 dark:text-blue-400">إجمالي المديونيات (مدين)</p>
+            <p className="text-xs font-semibold text-blue-700 dark:text-blue-400">إجمالي المدين (فواتير قبل المرتجعات)</p>
           </div>
           <p className="text-xl font-bold text-blue-700 dark:text-blue-300">{formatCurrency(totalDebit)}</p>
         </div>
         <div className="bg-gradient-to-br from-green-500/10 to-green-600/5 border border-green-200 dark:border-green-800/40 rounded-xl p-4">
           <div className="flex items-center gap-2 mb-2">
             <TrendingUp className="w-4 h-4 text-green-600" />
-            <p className="text-xs font-semibold text-green-700 dark:text-green-400">إجمالي المسدد (دائن)</p>
+            <p className="text-xs font-semibold text-green-700 dark:text-green-400">إجمالي الدائن (مدفوعات ومرتجعات)</p>
           </div>
           <p className="text-xl font-bold text-green-700 dark:text-green-300">{formatCurrency(totalCredit)}</p>
         </div>
@@ -203,16 +237,16 @@ export function LedgerTable({ entries, clientName, openingBalance }: Props) {
                 <tr className="bg-muted/20">
                   <td className="px-4 py-2.5 text-xs text-muted-foreground">—</td>
                   <td className="px-4 py-2.5 text-xs text-muted-foreground" colSpan={2}>
-                    رصيد افتتاحي {startDate ? `(قبل ${formatShortDate(new Date(startDate))})` : "(كل المعاملات)"}
+                    رصيد افتتاحي {startDate ? `(قبل ${formatShortDate(parseLocalDate(startDate) ?? new Date(startDate))})` : "(قبل أول معاملة)"}
                   </td>
                   <td className="px-4 py-2.5" />
                   <td className="px-4 py-2.5 text-center" />
                   <td className="px-4 py-2.5 text-center" />
                   <td className="px-4 py-2.5 text-center">
-                    <span className={cn("font-semibold text-sm", openingBalance > 0 ? "text-amber-600" : openingBalance < 0 ? "text-green-600" : "text-muted-foreground")}>
-                      {formatCurrency(Math.abs(openingBalance))}
-                      {openingBalance > 0 && <span className="text-[10px] mr-1">م</span>}
-                      {openingBalance < 0 && <span className="text-[10px] mr-1">دا</span>}
+                    <span className={cn("font-semibold text-sm", openingForPeriod > 0 ? "text-amber-600" : openingForPeriod < 0 ? "text-green-600" : "text-muted-foreground")}>
+                      {formatCurrency(Math.abs(openingForPeriod))}
+                      {openingForPeriod > 0 && <span className="text-[10px] mr-1">م</span>}
+                      {openingForPeriod < 0 && <span className="text-[10px] mr-1">دا</span>}
                     </span>
                   </td>
                 </tr>
@@ -229,12 +263,14 @@ export function LedgerTable({ entries, clientName, openingBalance }: Props) {
                     >
                       <td className="px-4 py-3 text-xs text-muted-foreground">{idx + 1}</td>
                       <td className="px-4 py-3 whitespace-nowrap">
-                        <span className="font-mono text-xs text-foreground">{formatShortDate(new Date(entry.date))}</span>
+                        <span className="font-mono text-xs text-foreground" suppressHydrationWarning>
+                          {formatLedgerTimestamp(entry.occurredAt)}
+                        </span>
                       </td>
                       <td className="px-4 py-3">
                         <span className={cn("inline-flex items-center gap-1.5 text-xs font-medium px-2.5 py-1 rounded-full border", meta.bg, meta.color)}>
                           <Icon className="w-3 h-3" />
-                          {meta.label}
+                          {entry.isCashRefund ? "مرتجع نقدي" : meta.label}
                         </span>
                       </td>
                       <td className="px-4 py-3">
@@ -242,6 +278,11 @@ export function LedgerTable({ entries, clientName, openingBalance }: Props) {
                         {entry.description && (
                           <p className="text-[10px] text-muted-foreground mt-0.5 max-w-[240px] truncate">{entry.description}</p>
                         )}
+                        {entry.memoAmount ? (
+                          <p className="text-[10px] font-semibold text-red-600 dark:text-red-400 mt-0.5">
+                            قيمة رد نقدي: {formatCurrency(entry.memoAmount)} — لا يؤثر على الرصيد
+                          </p>
+                        ) : null}
                       </td>
                       <td className="px-4 py-3 text-center">
                         {entry.debit > 0 ? (
@@ -306,7 +347,11 @@ export function LedgerTable({ entries, clientName, openingBalance }: Props) {
         </div>
         <div className="flex items-center gap-1.5">
           <span className="w-2 h-2 rounded-full bg-green-500 inline-block" />
-          <span><strong>دائن (دا)</strong> = يقلل المديونية (دفعة أو مرتجع)</span>
+          <span><strong>دائن (دا)</strong> = يقلل المديونية (دفعة أو مرتجع يخصم من الحساب)</span>
+        </div>
+        <div className="flex items-center gap-1.5">
+          <span className="w-2 h-2 rounded-full bg-red-500 inline-block" />
+          <span><strong>مرتجع نقدي</strong> = معلومة فقط، لأن قيمته رُدت نقداً ولم تؤثر على المديونية</span>
         </div>
       </div>
     </div>

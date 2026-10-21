@@ -3,8 +3,10 @@ import Link from "next/link";
 import { getPharmacyById } from "@/queries/pharmacies";
 import { getAllSalesReps } from "@/queries/sales";
 import { ChangeRepForm } from "@/components/pharmacies/change-rep-form";
+import { ClientInvoicesTable } from "@/components/sales/client-invoices-table";
+import { toClientInvoiceRows } from "@/lib/invoice-rows";
 import { Building2, ArrowRight, FileText, Target, Wallet, User, Phone, MapPin, BookOpen } from "lucide-react";
-import { formatCurrency, formatDate, cn } from "@/lib/utils";
+import { formatCurrency, cn } from "@/lib/utils";
 import { Suspense } from "react";
 import { Skeleton } from "@/components/ui/skeleton";
 import type { Metadata } from "next";
@@ -180,68 +182,7 @@ async function PharmacyContent({ pharmacy }: { pharmacy: any }) {
             </div>
           </div>
 
-          {/* Recent Invoices */}
-          <div className="bg-card border border-border rounded-xl overflow-hidden">
-            <div className="px-5 py-4 border-b border-border/60">
-              <h2 className="font-semibold text-sm flex items-center gap-2">
-                <FileText className="w-4 h-4 text-primary" />
-                الفواتير الأخيرة
-              </h2>
-            </div>
-            {pharmacy.invoices.length === 0 ? (
-              <div className="p-10 flex flex-col items-center justify-center text-center bg-muted/10 border border-dashed border-border/60 rounded-xl m-4">
-                <div className="w-12 h-12 bg-muted rounded-full flex items-center justify-center mb-3">
-                  <FileText className="w-6 h-6 text-muted-foreground opacity-50" />
-                </div>
-                <h3 className="text-sm font-bold text-foreground mb-1">لا توجد فواتير مسجلة</h3>
-                <p className="text-xs text-muted-foreground">لم يتم إصدار أي فواتير لهذه الصيدلية حتى الآن.</p>
-              </div>
-            ) : (
-              <div className="overflow-x-auto">
-                <table className="w-full text-sm">
-                <thead>
-                  <tr className="bg-muted/40 border-b border-border/60">
-                    <th className="text-right px-4 py-2 font-medium text-muted-foreground">الرقم</th>
-                    <th className="text-center px-4 py-2 font-medium text-muted-foreground">النوع</th>
-                    <th className="text-center px-4 py-2 font-medium text-muted-foreground">الإجمالي</th>
-                    <th className="text-center px-4 py-2 font-medium text-muted-foreground">المتبقي</th>
-                    <th className="text-right px-4 py-2 font-medium text-muted-foreground">التاريخ</th>
-                  </tr>
-                </thead>
-                <tbody className="divide-y divide-border/60">
-                  {pharmacy.invoices.map((inv: any) => (
-                    <tr key={inv.id}>
-                      <td className="px-4 py-3">
-                        <Link href={`/dashboard/sales/${inv.id}`} className="font-medium font-mono text-primary hover:underline">
-                          {inv.invoiceNumber}
-                        </Link>
-                      </td>
-                      <td className="px-4 py-3 text-center">
-                        <span className={cn("text-[10px] px-2 py-0.5 rounded border", inv.type === "CASH" ? "text-green-700 bg-green-50 border-green-200" : "text-blue-700 bg-blue-50 border-blue-200")}>
-                          {inv.type === "CASH" ? "نقدي" : "آجل"}
-                        </span>
-                      </td>
-                      <td className="px-4 py-3 text-center font-semibold text-foreground">
-                        {formatCurrency(inv.total.toString())}
-                      </td>
-                      <td className="px-4 py-3 text-center text-amber-600 font-medium">
-                        {Number(inv.remainingAmount) > 0 ? formatCurrency(inv.remainingAmount.toString()) : "—"}
-                      </td>
-                      <td className="px-4 py-3 text-muted-foreground text-xs whitespace-nowrap">
-                        {formatDate(inv.invoiceDate)}
-                      </td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
-            )}
-            <div className="p-3 border-t border-border/60 bg-muted/20 text-center">
-              <Link href="/dashboard/sales" className="text-xs text-primary hover:underline font-medium">
-                عرض في سجل المبيعات
-              </Link>
-            </div>
-          </div>
+          <ClientInvoicesTable invoices={toClientInvoiceRows(pharmacy.invoices)} />
         </div>
 
         {/* Sidebar Info */}

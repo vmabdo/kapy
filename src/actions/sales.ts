@@ -180,19 +180,20 @@ export async function createInvoice(
       return { success: false, error: `رقم الفاتورة "${invoiceNumber}" موجود بالفعل. اختر رقماً مختلفاً.` };
     }
 
+    // ── Fetch the client once — used for warehouse routing + ledger description ──
+    const pharmacy = await prisma.pharmacy.findUnique({
+      where: { id: data.pharmacyId },
+      select: { governorateId: true, name: true },
+    });
+    if (!pharmacy) {
+      return { success: false, error: "العميل غير موجود" };
+    }
+
     // ── For LEGACY invoices: no warehouse required ──
     let subWarehouse: { id: string; name: string } | null = null;
 
     if (!data.isLegacy) {
       // ── CRITICAL: Find SUB-warehouse in client's governorate ──
-      const pharmacy = await prisma.pharmacy.findUnique({
-        where: { id: data.pharmacyId },
-        select: { governorateId: true, name: true },
-      });
-      if (!pharmacy) {
-        return { success: false, error: "العميل غير موجود" };
-      }
-
       subWarehouse = await prisma.warehouse.findFirst({
         where: {
           type: "SUB",
@@ -475,7 +476,7 @@ export async function createInvoice(
             category: TransactionCategory.INVOICE_PAYMENT,
             amount: amountPaidNow,
             balanceAfter: newBalance,
-            description: `تحصيل فاتورة رقم ${invoiceNumber}`,
+            description: `تحصيل دفعة لفاتورة رقم ${invoiceNumber} — ${pharmacy.name}`,
             paymentId: payment.id,
           },
         });
@@ -566,6 +567,9 @@ export async function recordInvoicePayment(
     await prisma.$transaction(async (tx) => {
       const invoice = await tx.invoice.findUniqueOrThrow({
         where: { id: data.invoiceId },
+        include: {
+          pharmacy: { select: { name: true } },
+        },
       });
 
       if (invoice.status === InvoiceStatus.PAID) {
@@ -632,7 +636,7 @@ export async function recordInvoicePayment(
           category: TransactionCategory.INVOICE_PAYMENT,
           amount: amount,
           balanceAfter: newBalance,
-          description: `تحصيل دفعة لفاتورة رقم ${invoice.invoiceNumber}`,
+          description: `تحصيل دفعة لفاتورة رقم ${invoice.invoiceNumber} — ${invoice.pharmacy.name}`,
           paymentId: payment.id,
         },
       });

@@ -35,8 +35,7 @@ export async function getCompanyById(id: string) {
       governorate: true,
       assignedReps: { include: { salesRep: { select: { name: true, employeeCode: true } } } },
       invoices: {
-        take: 10,
-        orderBy: { invoiceDate: "desc" },
+        orderBy: { createdAt: "desc" },
         include: { salesRep: { select: { name: true } } },
       },
       targetAttainments: {

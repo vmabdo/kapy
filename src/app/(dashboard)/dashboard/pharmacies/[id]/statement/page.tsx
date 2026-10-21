@@ -6,7 +6,8 @@ import { formatCurrency } from "@/lib/utils";
 import type { Metadata } from "next";
 import { Suspense } from "react";
 import { Skeleton } from "@/components/ui/skeleton";
-import { LedgerTable, type LedgerEntry } from "./ledger-table";
+import { getClientStatement } from "@/queries/client-statement";
+import { LedgerTable } from "./ledger-table";
 
 interface Props {
   params: { id: string };
@@ -117,147 +118,29 @@ function StatementSkeleton() {
 }
 
 async function StatementContent({ clientId, clientName, clientBalance }: { clientId: string, clientName: string, clientBalance: string }) {
-  // Fetch ALL transactions for this client in parallel
-  const [invoices, payments, returns] = await Promise.all([
-    prisma.invoice.findMany({
-      where: { pharmacyId: clientId, status: { not: "CANCELLED" } },
-      select: {
-        id: true,
-        invoiceNumber: true,
-        invoiceDate: true,
-        type: true,
-        total: true,
-        createdAt: true,
-        items: {
-          select: { quantity: true, product: { select: { name: true } } },
-          take: 3,
-        },
-      },
-      orderBy: { invoiceDate: "asc" },
-    }),
-
-    prisma.payment.findMany({
-      where: { pharmacyId: clientId },
-      select: {
-        id: true,
-        amount: true,
-        paidAt: true,
-        method: true,
-        referenceNo: true,
-        notes: true,
-        invoice: { select: { invoiceNumber: true } },
-        paymentItems: {
-          select: {
-            paidQuantity: true,
-            product: { select: { name: true } },
-          },
-          take: 3,
-        },
-      },
-      orderBy: { paidAt: "asc" },
-    }),
-
-    prisma.return.findMany({
-      where: { pharmacyId: clientId },
-      select: {
-        id: true,
-        returnNumber: true,
-        returnDate: true,
-        totalAmount: true,
-        createdAt: true,
-        items: {
-          select: { quantity: true, product: { select: { name: true } } },
-          take: 3,
-        },
-      },
-      orderBy: { returnDate: "asc" },
-    }),
-  ]);
-
-  // Build a unified ledger entry list
-  const entries: LedgerEntry[] = [];
-
-  for (const inv of invoices) {
-    const productSummary = inv.items
-      .map((i) => `${Number(i.quantity)} × ${i.product.name}`)
-      .join("، ");
-    entries.push({
-      id: inv.id,
-      date: inv.invoiceDate,
-      type: "INVOICE",
-      reference: `فاتورة ${inv.invoiceNumber}`,
-      description: productSummary || `${inv.type === "CASH" ? "نقدي" : "آجل"}`,
-      debit: Number(inv.total),
-      credit: 0,
-    });
-  }
-
-  for (const pay of payments) {
-    const METHOD_LABEL: Record<string, string> = {
-      CASH: "نقدي",
-      BANK_TRANSFER: "تحويل بنكي",
-      CHECK: "شيك",
-    };
-    const itemSummary = pay.paymentItems
-      .map((pi) => `${Number(pi.paidQuantity)} × ${pi.product.name}`)
-      .join("، ");
-
-    const description =
-      itemSummary
-        ? `سداد بكميات: ${itemSummary}`
-        : pay.notes
-        ? pay.notes
-        : pay.referenceNo
-        ? `مرجع: ${pay.referenceNo}`
-        : `${METHOD_LABEL[pay.method] ?? pay.method} — مقابل ${pay.invoice.invoiceNumber}`;
-
-    entries.push({
-      id: pay.id,
-      date: pay.paidAt,
-      type: "PAYMENT",
-      reference: `دفعة — ${pay.invoice.invoiceNumber}`,
-      description,
-      debit: 0,
-      credit: Number(pay.amount),
-    });
-  }
-
-  for (const ret of returns) {
-    const productSummary = ret.items
-      .map((i) => `${Number(i.quantity)} × ${i.product.name}`)
-      .join("، ");
-    entries.push({
-      id: ret.id,
-      date: ret.returnDate,
-      type: "RETURN",
-      reference: `مرتجع ${ret.returnNumber}`,
-      description: productSummary,
-      debit: 0,
-      credit: Number(ret.totalAmount),
-    });
-  }
-
-  // Sort chronologically
-  entries.sort((a, b) => new Date(a.date).getTime() - new Date(b.date).getTime());
-
-  const totalDebitAll = entries.reduce((s, e) => s + e.debit, 0);
-  const totalCreditAll = entries.reduce((s, e) => s + e.credit, 0);
+  const statement = await getClientStatement(clientId, Number(clientBalance));
+  const { entries, totals, openingBalance, cashRefundsTotal, invoiceCount } = statement;
 
   return (
     <>
-      {/* Quick Stats bar */}
+      {/* Quick Stats bar — all-time totals, matching the unfiltered ledger */}
       <div className="grid grid-cols-2 md:grid-cols-4 gap-3 mb-6">
         <div className="bg-card border border-border rounded-xl p-4 text-center">
           <p className="text-xs text-muted-foreground mb-1">إجمالي الفواتير</p>
-          <p className="font-bold text-foreground">{invoices.length}</p>
+          <p className="font-bold text-foreground">{invoiceCount}</p>
         </div>
         <div className="bg-card border border-border rounded-xl p-4 text-center">
-          <p className="text-xs text-muted-foreground mb-1">إجمالي المبيعات</p>
-          <p className="font-bold text-blue-600">{formatCurrency(totalDebitAll)}</p>
+          <p className="text-xs text-muted-foreground mb-1">إجمالي المبيعات (قبل المرتجعات)</p>
+          <p className="font-bold text-blue-600">{formatCurrency(totals.debit)}</p>
         </div>
         <div className="bg-card border border-border rounded-xl p-4 text-center">
           <p className="text-xs text-muted-foreground mb-1">إجمالي التحصيلات والمرتجعات</p>
-          <p className="font-bold text-green-600">{formatCurrency(totalCreditAll)}</p>
+          <p className="font-bold text-green-600">{formatCurrency(totals.credit)}</p>
+          {cashRefundsTotal > 0 && (
+            <p className="text-[10px] text-muted-foreground mt-1 leading-relaxed">
+              منها {formatCurrency(cashRefundsTotal)} مرتجعات نقدية (خارج الرصيد)
+            </p>
+          )}
         </div>
         <div className="bg-card border border-border rounded-xl p-4 text-center">
           <p className="text-xs text-muted-foreground mb-1">الرصيد المديونية</p>
@@ -265,11 +148,17 @@ async function StatementContent({ clientId, clientName, clientBalance }: { clien
         </div>
       </div>
 
+      {Math.abs(openingBalance) > 0.005 && (
+        <div className="mb-6 rounded-xl border border-amber-200 dark:border-amber-900/40 bg-amber-50 dark:bg-amber-900/10 px-4 py-3 text-xs text-amber-800 dark:text-amber-300">
+          يوجد رصيد افتتاحي / تسوية بقيمة {formatCurrency(openingBalance)} غير ممثل بمعاملات مسجلة، وتم إدراجه في أول الكشف لمواءمة الرصيد الحالي مع الرصيد الختامي.
+        </div>
+      )}
+
       {/* Main Ledger — Client Component with filters */}
       <LedgerTable
         entries={entries}
         clientName={clientName}
-        openingBalance={0}
+        openingBalance={openingBalance}
       />
     </>
   );

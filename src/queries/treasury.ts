@@ -15,16 +15,73 @@ export async function getTreasury() {
   return treasury;
 }
 
+/** Matches invoice numbers such as INV-20261021-12-8 or INV-2026-00001. */
+const INVOICE_NUMBER_PATTERN = /INV-[A-Za-z0-9_-]+/g;
+
+/**
+ * Enriches older ledger rows — which only carry the invoice number in their
+ * description — with the client (pharmacy/company) name.
+ */
+async function withClientNames<T extends { description: string | null }>(
+  transactions: T[]
+): Promise<T[]> {
+  if (transactions.length === 0) return transactions;
+
+  const invoiceNumbers = Array.from(
+    new Set(
+      transactions.flatMap(
+        (tx) => tx.description?.match(INVOICE_NUMBER_PATTERN) ?? []
+      )
+    )
+  );
+
+  if (invoiceNumbers.length === 0) return transactions;
+
+  const invoices = await prisma.invoice.findMany({
+    where: { invoiceNumber: { in: invoiceNumbers } },
+    select: {
+      invoiceNumber: true,
+      pharmacy: { select: { name: true } },
+    },
+  });
+
+  const clientNameByInvoice = new Map(
+    invoices.map((invoice) => [invoice.invoiceNumber, invoice.pharmacy.name])
+  );
+
+  return transactions.map((tx) => {
+    if (!tx.description) return tx;
+
+    const names = Array.from(
+      new Set(
+        (tx.description.match(INVOICE_NUMBER_PATTERN) ?? [])
+          .map((invoiceNumber) => clientNameByInvoice.get(invoiceNumber))
+          .filter((name): name is string => Boolean(name))
+          .filter((name) => !tx.description!.includes(name))
+      )
+    );
+
+    if (names.length === 0) return tx;
+
+    return {
+      ...tx,
+      description: `${tx.description} — ${names.join(" — ")}`,
+    };
+  });
+}
+
 export async function getTransactions(filters?: { type?: TransactionType; take?: number }) {
   const { type, take = 50 } = filters ?? {};
 
-  return prisma.transaction.findMany({
+  const transactions = await prisma.transaction.findMany({
     where: {
       ...(type && { type }),
     },
     orderBy: { transactedAt: "desc" },
     take,
   });
+
+  return withClientNames(transactions);
 }
 
 export async function getTreasuryStats() {
