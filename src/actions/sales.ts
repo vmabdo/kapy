@@ -15,8 +15,10 @@ import {
 } from "@prisma/client";
 import { z } from "zod";
 import { addDays, format } from "date-fns";
-import { calculateDiscountAmount, calculateNetTotal } from "@/lib/utils";
+import { calculateDiscountAmount } from "@/lib/utils";
 import { getSystemSettings } from "@/queries/settings";
+import { decrementStockOrThrow } from "@/lib/stock";
+import { getOrCreateTreasury } from "@/lib/treasury";
 
 // ─── Schemas ──────────────────────────────────────────────────
 
@@ -407,72 +409,6 @@ export async function createInvoice(
         };
       }
 
-      // ── Validate warehouse stock availability ──
-      const productIds = data.items.map((i) => i.productId as string);
-      const stockItems = await prisma.stockItem.findMany({
-        where: { warehouseId: subWarehouse.id, productId: { in: productIds } },
-        include: { product: { select: { name: true } } },
-      });
-      const stockItemMap = new Map(stockItems.map((si) => [si.productId, si]));
-
-      for (const item of data.items) {
-        const totalRequired = (item.quantity || 1) + (item.bonusQuantity ?? 0);
-        const stockItem = stockItemMap.get(item.productId as string);
-        const available = Number(stockItem?.quantity ?? 0) - Number(stockItem?.reservedQty ?? 0);
-        if (available < totalRequired) {
-          return {
-            success: false,
-            error: `المخزون غير كافٍ في مخزن "${subWarehouse.name}" للمنتج "${stockItem?.product?.name ?? item.productId}". المتاح: ${available}، المطلوب (بما في ذلك البونص): ${totalRequired}`,
-          };
-        }
-      }
-    }
-
-    // ── Calculate totals ──
-    // LEGACY: total is the raw debt amount, no items, no discount
-    let subtotal: number;
-    let discountAmount: number;
-    let totalAmount: number;
-    let itemsWithDiscountedPrice: Array<{
-      productId: string;
-      quantity: number;
-      bonusQuantity: number;
-      unitPrice: number;
-      discountedUnitPrice: number;
-    }> = [];
-
-    if (data.isLegacy) {
-      subtotal = data.legacyDebtAmount ?? 0;
-      discountAmount = 0;
-      totalAmount = subtotal;
-      itemsWithDiscountedPrice = [];
-    } else {
-      // Calculate subtotal — only billed quantity * price (bonus boxes are free)
-      subtotal = data.items.reduce(
-        (sum, item) => sum + (item.quantity || 1) * (item.unitPrice || 0),
-        0
-      );
-
-      // Calculate discount amount
-      discountAmount = calculateDiscountAmount(
-        subtotal,
-        data.discountType,
-        data.discountValue
-      );
-
-      totalAmount = calculateNetTotal(subtotal, discountAmount);
-
-      // ── CRITICAL: Compute proportional discount factor per item ──
-      const discountFactor = subtotal > 0 ? totalAmount / subtotal : 1;
-
-      // Build items with discountedUnitPrice pre-calculated
-      itemsWithDiscountedPrice = data.items.map((item) => ({
-        productId: item.productId as string,
-        quantity: item.quantity || 1,
-        bonusQuantity: item.bonusQuantity ?? 0,
-        unitPrice: item.unitPrice || 0,
-        discountedUnitPrice: (item.unitPrice || 0) * discountFactor,
-      }));
     }
 
     // Get settings for credit days
@@ -487,40 +423,214 @@ export async function createInvoice(
       dueDate = addDays(new Date(), creditDays);
     }
 
-    // Determine initial payment state
     const isCash = effectiveType === InvoiceType.CASH;
 
-    // Calculate upfront amount from itemized items (for CREDIT invoices)
-    // Upfront uses discountedUnitPrice so the amount is accurate after discount
-    let amountPaidNow = 0;
-    const activeUpfrontItems = (data.upfrontPaymentItems ?? []).filter(
-      (pi) => pi.paidQuantity > 0
-    );
-
-    if (isCash) {
-      amountPaidNow = totalAmount;
-    } else if (!data.isLegacy && activeUpfrontItems.length > 0) {
-      // unitPrice in upfrontPaymentItems is already the discountedUnitPrice (set by client)
-      amountPaidNow = activeUpfrontItems.reduce(
-        (sum, pi) => sum + pi.paidQuantity * pi.unitPrice,
-        0
-      );
-    }
-    // LEGACY invoices always start with 0 paid (full amount is deferred)
-
-    amountPaidNow = Math.min(amountPaidNow, totalAmount);
-    const remainingAmount = totalAmount - amountPaidNow;
-
-    let initialStatus: InvoiceStatus;
-    if (remainingAmount <= 0) {
-      initialStatus = InvoiceStatus.PAID;
-    } else if (amountPaidNow > 0) {
-      initialStatus = InvoiceStatus.PARTIALLY_PAID;
-    } else {
-      initialStatus = InvoiceStatus.CONFIRMED;
-    }
-
     const result = await prisma.$transaction(async (tx) => {
+      // ── Server-side financial source of truth ─────────────────────
+      // Never trust prices, line totals, discounts or payment amounts sent by
+      // the browser. Recompute them from the current product records inside
+      // the same transaction that writes the invoice.
+      const requestedQuantities = new Map<
+        string,
+        { quantity: number; bonusQuantity: number }
+      >();
+
+      for (const item of data.items) {
+        const productId = item.productId as string;
+        const quantity = Number(item.quantity);
+        const bonusQuantity = Number(item.bonusQuantity ?? 0);
+
+        if (!productId || !Number.isFinite(quantity) || quantity <= 0) {
+          throw new Error("بيانات أحد أصناف الفاتورة غير صالحة");
+        }
+        if (!Number.isFinite(bonusQuantity) || bonusQuantity < 0) {
+          throw new Error("كمية البونص يجب أن تكون 0 أو أكبر");
+        }
+
+        const existing = requestedQuantities.get(productId);
+        requestedQuantities.set(productId, {
+          quantity: (existing?.quantity ?? 0) + quantity,
+          bonusQuantity: (existing?.bonusQuantity ?? 0) + bonusQuantity,
+        });
+      }
+
+      const requestedProductIds = Array.from(requestedQuantities.keys());
+      const productRecords = data.isLegacy
+        ? []
+        : await tx.product.findMany({
+            where: { id: { in: requestedProductIds } },
+            select: {
+              id: true,
+              name: true,
+              isActive: true,
+              sellingPrice: true,
+            },
+          });
+      const productMap = new Map(
+        productRecords.map((product) => [product.id, product])
+      );
+
+      let serverSubtotal = 0;
+      let serverDiscountAmount = 0;
+      let serverTotalAmount = 0;
+      let serverRemainingAmount = 0;
+      let serverAmountPaidNow = 0;
+      let serverItems: Array<{
+        productId: string;
+        quantity: number;
+        bonusQuantity: number;
+        unitPrice: number;
+        discountedUnitPrice: number;
+      }> = [];
+      let serverUpfrontItems: Array<{
+        productId: string;
+        paidQuantity: number;
+        unitPrice: number;
+      }> = [];
+
+      if (data.isLegacy) {
+        serverSubtotal = roundMoney(Number(data.legacyDebtAmount ?? 0));
+        serverDiscountAmount = 0;
+        serverTotalAmount = serverSubtotal;
+      } else {
+        const pricedItems = requestedProductIds.map((productId) => {
+          const product = productMap.get(productId);
+          if (!product) {
+            throw new Error("أحد المنتجات المختارة غير موجود");
+          }
+          if (!product.isActive) {
+            throw new Error(`المنتج "${product.name}" غير مفعّل`);
+          }
+
+          const unitPrice = Number(product.sellingPrice);
+          if (!Number.isFinite(unitPrice) || unitPrice < 0) {
+            throw new Error(`سعر المنتج "${product.name}" غير صالح`);
+          }
+
+          const requested = requestedQuantities.get(productId)!;
+          return {
+            productId,
+            quantity: requested.quantity,
+            bonusQuantity: requested.bonusQuantity,
+            unitPrice,
+          };
+        });
+
+        serverSubtotal = roundMoney(
+          pricedItems.reduce(
+            (sum, item) => sum + item.quantity * item.unitPrice,
+            0
+          )
+        );
+
+        if (
+          data.discountType === DiscountType.PERCENTAGE &&
+          data.discountValue > 100
+        ) {
+          throw new Error("نسبة الخصم لا يمكن أن تتجاوز 100%");
+        }
+
+        if (
+          data.discountType === DiscountType.FIXED &&
+          data.discountValue > serverSubtotal + 0.005
+        ) {
+          throw new Error("قيمة الخصم الثابت لا يمكن أن تتجاوز إجمالي الفاتورة");
+        }
+
+        serverDiscountAmount = Math.min(
+          serverSubtotal,
+          Math.max(
+            0,
+            roundMoney(
+              calculateDiscountAmount(
+                serverSubtotal,
+                data.discountType,
+                data.discountValue
+              )
+            )
+          )
+        );
+        serverTotalAmount = roundMoney(
+          Math.max(0, serverSubtotal - serverDiscountAmount)
+        );
+
+        const discountFactor =
+          serverSubtotal > 0 ? serverTotalAmount / serverSubtotal : 1;
+
+        serverItems = pricedItems.map((item) => ({
+          ...item,
+          discountedUnitPrice:
+            Math.round(
+              (item.unitPrice * discountFactor + Number.EPSILON) * 10000
+            ) / 10000,
+        }));
+
+        const itemByProductId = new Map(
+          serverItems.map((item) => [item.productId, item])
+        );
+        const upfrontQuantities = new Map<string, number>();
+
+        if (!isCash) {
+          for (const upfront of data.upfrontPaymentItems ?? []) {
+            const paidQuantity = Number(upfront.paidQuantity);
+            if (!Number.isFinite(paidQuantity) || paidQuantity <= 0) continue;
+
+            const invoiceItem = itemByProductId.get(upfront.productId);
+            if (!invoiceItem) {
+              throw new Error("أحد منتجات الدفعة المقدمة غير موجود في الفاتورة");
+            }
+
+            const alreadyEntered =
+              upfrontQuantities.get(upfront.productId) ?? 0;
+            if (
+              alreadyEntered + paidQuantity >
+              invoiceItem.quantity + 1e-9
+            ) {
+              throw new Error(
+                `الكمية المدفوعة مقدماً من "${upfront.productId}" أكبر من الكمية المباعة`
+              );
+            }
+
+            upfrontQuantities.set(
+              upfront.productId,
+              alreadyEntered + paidQuantity
+            );
+
+            serverUpfrontItems.push({
+              productId: upfront.productId,
+              paidQuantity,
+              unitPrice: invoiceItem.discountedUnitPrice,
+            });
+            serverAmountPaidNow +=
+              paidQuantity * invoiceItem.discountedUnitPrice;
+          }
+        }
+
+        if (isCash) {
+          serverAmountPaidNow = serverTotalAmount;
+        } else {
+          serverAmountPaidNow = roundMoney(serverAmountPaidNow);
+          if (serverAmountPaidNow > serverTotalAmount + 0.005) {
+            throw new Error("الدفعة المقدمة أكبر من إجمالي الفاتورة");
+          }
+          serverAmountPaidNow = Math.min(
+            serverTotalAmount,
+            serverAmountPaidNow
+          );
+        }
+      }
+
+      serverRemainingAmount = roundMoney(
+        Math.max(0, serverTotalAmount - serverAmountPaidNow)
+      );
+
+      const serverInitialStatus: InvoiceStatus =
+        serverRemainingAmount <= 0.005
+          ? InvoiceStatus.PAID
+          : serverAmountPaidNow > 0.005
+            ? InvoiceStatus.PARTIALLY_PAID
+            : InvoiceStatus.CONFIRMED;
+
       // 1. Create Invoice
       const invoice = await tx.invoice.create({
         data: {
@@ -528,29 +638,29 @@ export async function createInvoice(
           pharmacyId: data.pharmacyId,
           salesRepId: data.isLegacy ? null : (data.salesRepId || null),
           type: effectiveType,
-          status: initialStatus,
-          subtotal,
+          status: serverInitialStatus,
+          subtotal: serverSubtotal,
           discountType: data.discountType,
           discountValue: data.discountValue,
-          discountAmount,
-          total: totalAmount,
-          paidAmount: amountPaidNow,
-          remainingAmount,
+          discountAmount: serverDiscountAmount,
+          total: serverTotalAmount,
+          paidAmount: serverAmountPaidNow,
+          remainingAmount: serverRemainingAmount,
           creditDays: effectiveType === InvoiceType.CREDIT ? creditDays : null,
           dueDate,
           notes: data.notes,
           isLegacy: data.isLegacy,
           invoiceDate: data.isLegacy && data.issueDate ? data.issueDate : undefined,
           // LEGACY invoices have NO items — only a total debt amount
-          ...(itemsWithDiscountedPrice.length > 0 && {
+          ...(serverItems.length > 0 && {
             items: {
-              create: itemsWithDiscountedPrice.map((item) => ({
+              create: serverItems.map((item) => ({
                 productId: item.productId,
                 quantity: item.quantity,
-                bonusQuantity: item.bonusQuantity ?? 0,
+                bonusQuantity: item.bonusQuantity,
                 unitPrice: item.unitPrice,
-                discountedUnitPrice: (item as any).discountedUnitPrice ?? 0,
-                lineTotal: item.quantity * item.unitPrice,
+                discountedUnitPrice: item.discountedUnitPrice,
+                lineTotal: roundMoney(item.quantity * item.unitPrice),
               })),
             },
           }),
@@ -559,18 +669,19 @@ export async function createInvoice(
 
       // 2. Deduct stock from the sub-warehouse of the client's governorate
       // IMPORTANT: Total physical deduction = quantity + bonusQuantity
-      // LEGACY invoices NEVER deduct stock
+      // LEGACY invoices NEVER deduct stock.
+      // Each deduction is a conditional atomic UPDATE, so concurrent invoices
+      // cannot both consume the same stock.
       if (!data.isLegacy && subWarehouse) {
-        for (const item of itemsWithDiscountedPrice) {
-          const totalDeductQty = item.quantity + (item.bonusQuantity ?? 0);
-          await tx.stockItem.update({
-            where: {
-              warehouseId_productId: {
-                warehouseId: subWarehouse.id,
-                productId: item.productId,
-              },
-            },
-            data: { quantity: { decrement: totalDeductQty } },
+        for (const item of serverItems) {
+          const totalDeductQty = item.quantity + item.bonusQuantity;
+          const productName = productMap.get(item.productId)?.name;
+
+          await decrementStockOrThrow(tx, {
+            warehouseId: subWarehouse.id,
+            productId: item.productId,
+            quantity: totalDeductQty,
+            productName,
           });
         }
 
@@ -583,9 +694,9 @@ export async function createInvoice(
             salesRepId: data.salesRepId || null,
             notes: `صرف للفاتورة ${invoiceNumber}`,
             items: {
-              create: itemsWithDiscountedPrice.map((item) => ({
+              create: serverItems.map((item) => ({
                 productId: item.productId,
-                quantity: item.quantity + (item.bonusQuantity ?? 0),
+                quantity: item.quantity + item.bonusQuantity,
               })),
             },
           },
@@ -593,12 +704,12 @@ export async function createInvoice(
       }
 
       // 4. If there is an upfront payment, create a Payment record
-      if (amountPaidNow > 0) {
+      if (serverAmountPaidNow > 0) {
         const payment = await tx.payment.create({
           data: {
             invoiceId: invoice.id,
             pharmacyId: data.pharmacyId,
-            amount: amountPaidNow,
+            amount: serverAmountPaidNow,
             method: "CASH",
             notes: isCash
               ? "دفع نقدي عند إصدار الفاتورة"
@@ -607,14 +718,13 @@ export async function createInvoice(
         });
 
         // 4.1 Add itemized payment items for upfront credit payment
-        // unitPrice here already holds the discountedUnitPrice passed from the client
-        if (!isCash && activeUpfrontItems.length > 0) {
+        if (!isCash && serverUpfrontItems.length > 0) {
           await tx.paymentItem.createMany({
-            data: activeUpfrontItems.map((pi) => ({
+            data: serverUpfrontItems.map((pi) => ({
               paymentId: payment.id,
               productId: pi.productId,
               paidQuantity: pi.paidQuantity,
-              unitPrice: pi.unitPrice, // discountedUnitPrice
+              unitPrice: roundMoney(pi.unitPrice),
             })),
           });
 
@@ -633,7 +743,7 @@ export async function createInvoice(
             });
 
             if (repMonthlyTarget) {
-              for (const pi of activeUpfrontItems) {
+              for (const pi of serverUpfrontItems) {
                 const targetItem = repMonthlyTarget.items.find(
                   (ti) => ti.productId === pi.productId
                 );
@@ -648,19 +758,12 @@ export async function createInvoice(
           }
         }
 
-        // 4.2 Sync with Treasury
-        let treasury = await tx.treasury.findFirst();
-        if (!treasury) {
-          treasury = await tx.treasury.create({
-            data: { name: "الخزينة الرئيسية", currentBalance: 0 },
-          });
-        }
-
-        const newBalance = Number(treasury.currentBalance) + amountPaidNow;
-
-        await tx.treasury.update({
+        // 4.2 Sync with Treasury using an atomic increment.
+        const treasury = await getOrCreateTreasury(tx);
+        const updatedTreasury = await tx.treasury.update({
           where: { id: treasury.id },
-          data: { currentBalance: newBalance },
+          data: { currentBalance: { increment: serverAmountPaidNow } },
+          select: { currentBalance: true },
         });
 
         await tx.transaction.create({
@@ -668,8 +771,8 @@ export async function createInvoice(
             treasuryId: treasury.id,
             type: TransactionType.CASH_IN,
             category: TransactionCategory.INVOICE_PAYMENT,
-            amount: amountPaidNow,
-            balanceAfter: newBalance,
+            amount: serverAmountPaidNow,
+            balanceAfter: updatedTreasury.currentBalance,
             description: `تحصيل دفعة لفاتورة رقم ${invoiceNumber} — ${pharmacy.name}`,
             paymentId: payment.id,
           },
@@ -677,10 +780,10 @@ export async function createInvoice(
       }
 
       // 5. Update Client Balance — only for the outstanding credit portion
-      if (effectiveType === InvoiceType.CREDIT && remainingAmount > 0) {
+      if (effectiveType === InvoiceType.CREDIT && serverRemainingAmount > 0) {
         await tx.pharmacy.update({
           where: { id: data.pharmacyId },
-          data: { currentBalance: { increment: remainingAmount } },
+          data: { currentBalance: { increment: serverRemainingAmount } },
         });
       }
 
@@ -698,7 +801,7 @@ export async function createInvoice(
         if (targetPeriod) {
           const updatedTarget = await tx.pharmacyTargetPeriod.update({
             where: { id: targetPeriod.id },
-            data: { achieved: { increment: totalAmount } },
+            data: { achieved: { increment: serverTotalAmount } },
             include: { pharmacy: { select: { name: true } } },
           });
 
@@ -706,7 +809,7 @@ export async function createInvoice(
           const targetGoal = Number(updatedTarget.target);
           if (
             currentAchieved >= targetGoal &&
-            currentAchieved - totalAmount < targetGoal
+            currentAchieved - serverTotalAmount < targetGoal
           ) {
             await tx.alert.create({
               data: {
@@ -817,51 +920,180 @@ export async function recordInvoicePayment(
 
     const data = RecordPaymentSchema.parse(formData);
 
-    // If itemized, compute amount from the payment items
-    let amount = data.amount;
-    if (data.paymentItems && data.paymentItems.length > 0) {
-      amount = data.paymentItems.reduce(
-        (sum, pi) => sum + pi.paidQuantity * pi.unitPrice,
-        0
-      );
-    }
-
     await prisma.$transaction(async (tx) => {
+      // Serialize payments (and returns) for this invoice. The conditional
+      // UPDATE below remains the final overpayment guard; this lock also makes
+      // the itemized prior-paid-quantity check safe.
+      await tx.$queryRaw`
+        SELECT id FROM invoices WHERE id = ${data.invoiceId} FOR UPDATE
+      `;
+
       const invoice = await tx.invoice.findUniqueOrThrow({
         where: { id: data.invoiceId },
         include: {
           pharmacy: { select: { name: true } },
+          items: true,
         },
       });
 
-      if (invoice.status === InvoiceStatus.PAID) {
-        throw new Error("هذه الفاتورة مسددة بالكامل");
+      if (
+        invoice.status === InvoiceStatus.PAID ||
+        invoice.status === InvoiceStatus.CANCELLED ||
+        invoice.status === InvoiceStatus.DRAFT
+      ) {
+        throw new Error("لا يمكن تسجيل دفعة على هذه الفاتورة في وضعها الحالي");
       }
 
-      const currentPaid = Number(invoice.paidAmount);
-      const currentRemaining = Number(invoice.remainingAmount);
+      const invoiceQuantityByProduct = new Map<string, number>();
+      for (const item of invoice.items) {
+        invoiceQuantityByProduct.set(
+          item.productId,
+          (invoiceQuantityByProduct.get(item.productId) ?? 0) +
+            Number(item.quantity)
+        );
+      }
 
-      if (amount > currentRemaining + 0.01) {
+      const invoiceSubtotal = Number(invoice.subtotal);
+      const invoiceNetTotal = Math.max(
+        0,
+        invoiceSubtotal - Number(invoice.discountAmount)
+      );
+      const invoiceDiscountFactor =
+        invoiceSubtotal > 0 ? invoiceNetTotal / invoiceSubtotal : 1;
+
+      const priorPaidRows = await tx.paymentItem.groupBy({
+        by: ["productId"],
+        where: { payment: { invoiceId: invoice.id } },
+        _sum: { paidQuantity: true },
+      });
+      const priorPaidByProduct = new Map(
+        priorPaidRows.map((row) => [
+          row.productId,
+          Number(row._sum.paidQuantity ?? 0),
+        ])
+      );
+
+      const requestedPaidByProduct = new Map<string, number>();
+      const validatedPaymentItems: Array<{
+        productId: string;
+        paidQuantity: number;
+        unitPrice: number;
+      }> = [];
+
+      // Itemized mode: the server recalculates the amount from immutable
+      // invoice-item prices. Client-supplied unitPrice is ignored.
+      let amount = roundMoney(Number(data.amount));
+
+      if (data.paymentItems && data.paymentItems.length > 0) {
+        let itemizedAmount = 0;
+
+        for (const paymentItem of data.paymentItems) {
+          const paidQuantity = Number(paymentItem.paidQuantity);
+          if (!Number.isFinite(paidQuantity) || paidQuantity <= 0) continue;
+
+          const invoiceItem = invoice.items.find(
+            (item) => item.id === paymentItem.invoiceItemId
+          );
+          if (
+            !invoiceItem ||
+            invoiceItem.productId !== paymentItem.productId
+          ) {
+            throw new Error("أحد أصناف الدفعة لا ينتمي إلى هذه الفاتورة");
+          }
+
+          const alreadyPaid = priorPaidByProduct.get(invoiceItem.productId) ?? 0;
+          const alreadyRequested =
+            requestedPaidByProduct.get(invoiceItem.productId) ?? 0;
+          const invoiceQuantity =
+            invoiceQuantityByProduct.get(invoiceItem.productId) ?? 0;
+
+          if (
+            alreadyPaid + alreadyRequested + paidQuantity >
+            invoiceQuantity + 1e-9
+          ) {
+            throw new Error(
+              `الكمية المدفوعة من المنتج "${invoiceItem.productId}" أكبر من الكمية المتبقية غير المدفوعة`
+            );
+          }
+
+          requestedPaidByProduct.set(
+            invoiceItem.productId,
+            alreadyRequested + paidQuantity
+          );
+
+          const storedDiscountedPrice = Number(
+            invoiceItem.discountedUnitPrice
+          );
+          const effectivePrice =
+            storedDiscountedPrice > 0
+              ? storedDiscountedPrice
+              : Number(invoiceItem.unitPrice) * invoiceDiscountFactor;
+
+          itemizedAmount += paidQuantity * effectivePrice;
+          validatedPaymentItems.push({
+            productId: invoiceItem.productId,
+            paidQuantity,
+            unitPrice: roundMoney(effectivePrice),
+          });
+        }
+
+        if (validatedPaymentItems.length === 0) {
+          throw new Error("حدد كمية لمنتج واحد على الأقل");
+        }
+
+        amount = roundMoney(itemizedAmount);
+      }
+
+      if (!Number.isFinite(amount) || amount <= 0) {
+        throw new Error("قيمة الدفعة يجب أن تكون أكبر من 0");
+      }
+
+      const currentRemaining = Number(invoice.remainingAmount);
+      if (amount > currentRemaining + 0.005) {
         throw new Error(
           `المبلغ المدفوع (${amount.toFixed(2)}) أكبر من المبلغ المتبقي (${currentRemaining.toFixed(2)})`
         );
       }
 
-      const newPaidAmount = currentPaid + amount;
-      const newRemainingAmount = Math.max(0, currentRemaining - amount);
+      // Atomic conditional balance update. The database rejects the update if
+      // another payment already consumed the remaining balance.
+      const updatedInvoice = await tx.invoice.updateMany({
+        where: {
+          id: invoice.id,
+          status: {
+            notIn: [
+              InvoiceStatus.PAID,
+              InvoiceStatus.CANCELLED,
+              InvoiceStatus.DRAFT,
+            ],
+          },
+          remainingAmount: { gte: amount },
+        },
+        data: {
+          paidAmount: { increment: amount },
+          remainingAmount: { decrement: amount },
+        },
+      });
+
+      if (updatedInvoice.count !== 1) {
+        throw new Error(
+          "تغيّر رصيد الفاتورة أثناء تسجيل الدفعة. يرجى إعادة المحاولة."
+        );
+      }
+
+      const updatedBalances = await tx.invoice.findUniqueOrThrow({
+        where: { id: invoice.id },
+        select: { remainingAmount: true },
+      });
+
       const newStatus =
-        newRemainingAmount <= 0.01
+        Number(updatedBalances.remainingAmount) <= 0.005
           ? InvoiceStatus.PAID
           : InvoiceStatus.PARTIALLY_PAID;
 
-      // 1. Update Invoice
       await tx.invoice.update({
         where: { id: invoice.id },
-        data: {
-          paidAmount: newPaidAmount,
-          remainingAmount: newRemainingAmount,
-          status: newStatus,
-        },
+        data: { status: newStatus },
       });
 
       // 2. Create Payment Record
@@ -876,19 +1108,12 @@ export async function recordInvoicePayment(
         },
       });
 
-      // 2.1 Sync with Treasury
-      let treasury = await tx.treasury.findFirst();
-      if (!treasury) {
-        treasury = await tx.treasury.create({
-          data: { name: "الخزينة الرئيسية", currentBalance: 0 },
-        });
-      }
-
-      const newBalance = Number(treasury.currentBalance) + amount;
-
-      await tx.treasury.update({
+      // 2.1 Sync with Treasury using an atomic increment.
+      const treasury = await getOrCreateTreasury(tx);
+      const updatedTreasury = await tx.treasury.update({
         where: { id: treasury.id },
-        data: { currentBalance: newBalance },
+        data: { currentBalance: { increment: amount } },
+        select: { currentBalance: true },
       });
 
       await tx.transaction.create({
@@ -897,20 +1122,20 @@ export async function recordInvoicePayment(
           type: TransactionType.CASH_IN,
           category: TransactionCategory.INVOICE_PAYMENT,
           amount: amount,
-          balanceAfter: newBalance,
+          balanceAfter: updatedTreasury.currentBalance,
           description: `تحصيل دفعة لفاتورة رقم ${invoice.invoiceNumber} — ${invoice.pharmacy.name}`,
           paymentId: payment.id,
         },
       });
 
-      // 3. If itemized, create PaymentItem records
-      if (data.paymentItems && data.paymentItems.length > 0) {
+      // 3. If itemized, create server-validated PaymentItem records
+      if (validatedPaymentItems.length > 0) {
         await tx.paymentItem.createMany({
-          data: data.paymentItems.map((pi) => ({
+          data: validatedPaymentItems.map((pi) => ({
             paymentId: payment.id,
             productId: pi.productId,
             paidQuantity: pi.paidQuantity,
-            unitPrice: pi.unitPrice, // discountedUnitPrice passed from client
+            unitPrice: pi.unitPrice,
           })),
         });
 
@@ -929,7 +1154,7 @@ export async function recordInvoicePayment(
           });
 
           if (repMonthlyTarget) {
-            for (const pi of data.paymentItems) {
+            for (const pi of validatedPaymentItems) {
               const targetItem = repMonthlyTarget.items.find(
                 (ti) => ti.productId === pi.productId
               );
@@ -1066,47 +1291,58 @@ export async function deleteInvoicePayment(paymentId: string): Promise<ActionRes
       const invoice = payment.invoice;
       const amount = roundMoney(Number(payment.amount));
 
+      // Serialize with new payments/returns for this invoice.
+      await tx.$queryRaw`
+        SELECT id FROM invoices WHERE id = ${invoice.id} FOR UPDATE
+      `;
+
       if (!Number.isFinite(amount) || amount <= 0) {
         throw new Error("قيمة الدفعة غير صالحة ولا يمكن عكسها");
       }
 
-      const newPaidAmount = roundMoney(
-        Math.max(0, Number(invoice.paidAmount) - amount)
-      );
-      const newRemainingAmount = roundMoney(
-        Number(invoice.remainingAmount) + amount
-      );
+      // 1. Atomically restore the invoice balances. The guard prevents paid
+      // amount from becoming negative if another reversal already ran.
+      const reversedInvoice = await tx.invoice.updateMany({
+        where: {
+          id: invoice.id,
+          paidAmount: { gte: amount },
+        },
+        data: {
+          paidAmount: { decrement: amount },
+          remainingAmount: { increment: amount },
+        },
+      });
+
+      if (reversedInvoice.count !== 1) {
+        throw new Error(
+          "تغيّر رصيد الفاتورة أثناء حذف الدفعة. يرجى إعادة المحاولة."
+        );
+      }
+
+      const refreshedInvoice = await tx.invoice.findUniqueOrThrow({
+        where: { id: invoice.id },
+        select: { paidAmount: true, remainingAmount: true },
+      });
+
       const newStatus = resolveInvoiceStatusAfterPaymentReversal(
-        newPaidAmount,
-        newRemainingAmount
+        Number(refreshedInvoice.paidAmount),
+        Number(refreshedInvoice.remainingAmount)
       );
 
-      // 1. Restore the invoice balances.
       await tx.invoice.update({
         where: { id: invoice.id },
-        data: {
-          paidAmount: newPaidAmount,
-          remainingAmount: newRemainingAmount,
-          status: newStatus,
-        },
+        data: { status: newStatus },
       });
 
       // 2. Restore the client's debt.
       await restoreClientDebtForPayment(tx, invoice.pharmacyId, amount);
 
-      // 3. Reverse the treasury impact. Payments always create a cash-in row;
-      // if the row is missing (old data / manual cleanup) the balance is still
-      // reduced by the payment amount so cash and documents stay aligned.
-      const treasury = await tx.treasury.findFirst();
-      if (treasury) {
-        const newTreasuryBalance = roundMoney(
-          Number(treasury.currentBalance) - amount
-        );
-        await tx.treasury.update({
-          where: { id: treasury.id },
-          data: { currentBalance: newTreasuryBalance },
-        });
-      }
+      // 3. Reverse the treasury impact atomically.
+      const treasury = await getOrCreateTreasury(tx);
+      await tx.treasury.update({
+        where: { id: treasury.id },
+        data: { currentBalance: { decrement: amount } },
+      });
 
       let treasuryTransaction = await tx.transaction.findFirst({
         where: { paymentId: payment.id },
@@ -1442,17 +1678,11 @@ export async function deleteInvoice(invoiceId: string): Promise<ActionResult> {
         }
 
         if (cashToRemove !== 0) {
-          const treasury = await tx.treasury.findFirst();
-          if (treasury) {
-            await tx.treasury.update({
-              where: { id: treasury.id },
-              data: {
-                currentBalance: roundMoney(
-                  Number(treasury.currentBalance) - cashToRemove
-                ),
-              },
-            });
-          }
+          const treasury = await getOrCreateTreasury(tx);
+          await tx.treasury.update({
+            where: { id: treasury.id },
+            data: { currentBalance: { decrement: cashToRemove } },
+          });
         }
 
         await tx.transaction.deleteMany({

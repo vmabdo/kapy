@@ -1,18 +1,11 @@
 import { prisma } from "@/lib/prisma";
+import { getOrCreateTreasury } from "@/lib/treasury";
 import { TransactionType } from "@prisma/client";
 
 // ─── Treasury ─────────────────────────────────────────────────
 
 export async function getTreasury() {
-  let treasury = await prisma.treasury.findFirst();
-  
-  if (!treasury) {
-    treasury = await prisma.treasury.create({
-      data: { name: "الخزينة الرئيسية", currentBalance: 0 },
-    });
-  }
-  
-  return treasury;
+  return getOrCreateTreasury(prisma);
 }
 
 /** Matches invoice numbers such as INV-20261021-12-8 or INV-2026-00001. */

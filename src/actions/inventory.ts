@@ -3,6 +3,7 @@ import { handleActionError } from "@/lib/error-handler";
 
 import { prisma } from "@/lib/prisma";
 import { requireRole } from "@/lib/auth-utils";
+import { decrementStockOrThrow } from "@/lib/stock";
 import { revalidatePath } from "next/cache";
 import {
   WarehouseType,
@@ -489,42 +490,19 @@ export async function createStockMovement(
       0
     );
 
-    // ── Available stock check for transfers ────────────────
+    // Aggregate source deductions so duplicate product rows cannot each pass
+    // the stock check independently. The actual conditional UPDATE happens
+    // inside the transaction below.
+    const sourceQuantitiesByProduct = new Map<string, number>();
     if (
       data.movementType === StockMovementType.OUTBOUND &&
       sourceWarehouse
     ) {
-      const stockItems = await prisma.stockItem.findMany({
-        where: {
-          warehouseId: sourceWarehouse.id,
-          productId: { in: productIds },
-        },
-        select: {
-          productId: true,
-          quantity: true,
-          reservedQty: true,
-          product: { select: { name: true } },
-        },
-      });
-      const stockItemMap = new Map(
-        stockItems.map((stockItem) => [stockItem.productId, stockItem])
-      );
-
       for (const item of normalizedItems) {
-        const stockItem = stockItemMap.get(item.productId);
-        const available =
-          Number(stockItem?.quantity ?? 0) - Number(stockItem?.reservedQty ?? 0);
-
-        if (available < item.quantity) {
-          const productName =
-            stockItem?.product?.name ??
-            productMap.get(item.productId)?.name ??
-            item.productId;
-          return {
-            success: false,
-            error: `المخزون غير كافٍ للمنتج "${productName}". المتاح: ${available}، المطلوب: ${item.quantity}`,
-          };
-        }
+        sourceQuantitiesByProduct.set(
+          item.productId,
+          (sourceQuantitiesByProduct.get(item.productId) ?? 0) + item.quantity
+        );
       }
     }
 
@@ -560,24 +538,25 @@ export async function createStockMovement(
         },
       });
 
-      for (const item of normalizedItems) {
-        // Warehouse-to-warehouse transfer: decrement source first.
-        if (
-          data.movementType === StockMovementType.OUTBOUND &&
-          sourceWarehouse
-        ) {
-          await tx.stockItem.update({
-            where: {
-              warehouseId_productId: {
-                warehouseId: sourceWarehouse.id,
-                productId: item.productId,
-              },
-            },
-            data: { quantity: { decrement: item.quantity } },
+      // Warehouse-to-warehouse transfer: deduct the source atomically first.
+      if (
+        data.movementType === StockMovementType.OUTBOUND &&
+        sourceWarehouse
+      ) {
+        for (const [productId, quantity] of Array.from(
+          sourceQuantitiesByProduct.entries()
+        )) {
+          await decrementStockOrThrow(tx, {
+            warehouseId: sourceWarehouse.id,
+            productId,
+            quantity,
+            productName: productMap.get(productId)?.name,
           });
         }
+      }
 
-        // Supplier receipt or transfer destination: increment target.
+      // Supplier receipt or transfer destination: increment target.
+      for (const item of normalizedItems) {
         await tx.stockItem.upsert({
           where: {
             warehouseId_productId: {
@@ -801,7 +780,7 @@ export async function createStockCountCorrection(
 
     const data = StockCountCorrectionSchema.parse(formData);
 
-    const [warehouse, product, stockItem] = await Promise.all([
+    const [warehouse, product] = await Promise.all([
       prisma.warehouse.findUnique({
         where: { id: data.warehouseId },
         select: { id: true, name: true, isActive: true },
@@ -817,15 +796,6 @@ export async function createStockCountCorrection(
           reorderLevel: true,
         },
       }),
-      prisma.stockItem.findUnique({
-        where: {
-          warehouseId_productId: {
-            warehouseId: data.warehouseId,
-            productId: data.productId,
-          },
-        },
-        select: { quantity: true },
-      }),
     ]);
 
     if (!warehouse || !warehouse.isActive) {
@@ -835,16 +805,7 @@ export async function createStockCountCorrection(
       return { success: false, error: "المنتج غير موجود أو غير مفعّل" };
     }
 
-    const currentQuantity = Number(stockItem?.quantity ?? 0);
     const quantity = Number(data.quantity);
-
-    if (data.direction === "SHORTAGE" && quantity > currentQuantity) {
-      return {
-        success: false,
-        error: `لا يمكن تسجيل نقص أكبر من الرصيد الحالي. الرصيد الحالي: ${currentQuantity}`,
-      };
-    }
-
     const unitCost = resolveProductCost(product);
     const totalCost = quantity * unitCost;
     const isShortage = data.direction === "SHORTAGE";
@@ -879,18 +840,29 @@ export async function createStockCountCorrection(
         },
       });
 
+      let finalQuantity: number;
+
       if (isShortage) {
-        await tx.stockItem.update({
+        await decrementStockOrThrow(tx, {
+          warehouseId: warehouse.id,
+          productId: product.id,
+          quantity,
+          productName: product.name,
+        });
+
+        const current = await tx.stockItem.findUniqueOrThrow({
           where: {
             warehouseId_productId: {
               warehouseId: warehouse.id,
               productId: product.id,
             },
           },
-          data: { quantity: { decrement: quantity } },
+          select: { quantity: true },
         });
+
+        finalQuantity = Number(current.quantity);
       } else {
-        await tx.stockItem.upsert({
+        const updated = await tx.stockItem.upsert({
           where: {
             warehouseId_productId: {
               warehouseId: warehouse.id,
@@ -903,12 +875,11 @@ export async function createStockCountCorrection(
             productId: product.id,
             quantity,
           },
+          select: { quantity: true },
         });
-      }
 
-      const finalQuantity = isShortage
-        ? currentQuantity - quantity
-        : currentQuantity + quantity;
+        finalQuantity = Number(updated.quantity);
+      }
 
       if (isShortage && finalQuantity <= product.reorderLevel) {
         await tx.alert.create({
@@ -984,33 +955,17 @@ export async function dispatchSamples(
     const productIds = Array.from(
       new Set(data.items.map((item) => item.productId))
     );
-    const [products, stockItems] = await Promise.all([
-      prisma.product.findMany({
-        where: { id: { in: productIds } },
-        select: {
-          id: true,
-          name: true,
-          isActive: true,
-          costPrice: true,
-          sellingPrice: true,
-        },
-      }),
-      prisma.stockItem.findMany({
-        where: {
-          warehouseId: warehouse.id,
-          productId: { in: productIds },
-        },
-        select: {
-          productId: true,
-          quantity: true,
-          reservedQty: true,
-        },
-      }),
-    ]);
+    const products = await prisma.product.findMany({
+      where: { id: { in: productIds } },
+      select: {
+        id: true,
+        name: true,
+        isActive: true,
+        costPrice: true,
+        sellingPrice: true,
+      },
+    });
     const productMap = new Map(products.map((product) => [product.id, product]));
-    const stockMap = new Map(
-      stockItems.map((stockItem) => [stockItem.productId, stockItem])
-    );
 
     for (const productId of productIds) {
       const product = productMap.get(productId);
@@ -1043,18 +998,12 @@ export async function dispatchSamples(
       0
     );
 
-    // Available stock excludes quantities already reserved for orders.
+    const samplesByProduct = new Map<string, number>();
     for (const item of normalizedItems) {
-      const stockItem = stockMap.get(item.productId);
-      const reservedQty = Number(stockItem?.reservedQty ?? 0);
-      const available = Number(stockItem?.quantity ?? 0) - reservedQty;
-
-      if (available < item.quantity) {
-        return {
-          success: false,
-          error: `المخزون المتاح غير كافٍ للمنتج "${item.productName}". المتاح: ${available}، المطلوب: ${item.quantity}`,
-        };
-      }
+      samplesByProduct.set(
+        item.productId,
+        (samplesByProduct.get(item.productId) ?? 0) + item.quantity
+      );
     }
 
     const result = await prisma.$transaction(async (tx) => {
@@ -1087,26 +1036,15 @@ export async function dispatchSamples(
         },
       });
 
-      for (const item of normalizedItems) {
-        const stockItem = stockMap.get(item.productId);
-        const reservedQty = Number(stockItem?.reservedQty ?? 0);
-
-        // Guard against a concurrent stock change between validation and save.
-        const updated = await tx.stockItem.updateMany({
-          where: {
-            warehouseId: warehouse.id,
-            productId: item.productId,
-            reservedQty,
-            quantity: { gte: item.quantity + reservedQty },
-          },
-          data: { quantity: { decrement: item.quantity } },
+      for (const [productId, quantity] of Array.from(
+        samplesByProduct.entries()
+      )) {
+        await decrementStockOrThrow(tx, {
+          warehouseId: warehouse.id,
+          productId,
+          quantity,
+          productName: productMap.get(productId)?.name,
         });
-
-        if (updated.count !== 1) {
-          throw new Error(
-            `تغيّر رصيد المنتج "${item.productName}" أثناء الحفظ. يرجى إعادة المحاولة.`
-          );
-        }
       }
 
       const updatedStockItems = await tx.stockItem.findMany({

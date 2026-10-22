@@ -3,6 +3,8 @@ import { handleActionError } from "@/lib/error-handler";
 
 import { prisma } from "@/lib/prisma";
 import { requireRole } from "@/lib/auth-utils";
+import { decrementStockOrThrow } from "@/lib/stock";
+import { getOrCreateTreasury } from "@/lib/treasury";
 import { revalidatePath } from "next/cache";
 import {
   InvoiceStatus,
@@ -108,6 +110,12 @@ export async function processInvoiceReturn(
     const data = ProcessReturnSchema.parse(formData);
 
     const result = await prisma.$transaction(async (tx) => {
+      // Serialize all returns for this invoice. This row lock makes the
+      // cumulative-quantity check below safe against simultaneous requests.
+      await tx.$queryRaw`
+        SELECT id FROM invoices WHERE id = ${data.invoiceId} FOR UPDATE
+      `;
+
       const invoice = await tx.invoice.findUniqueOrThrow({
         where: { id: data.invoiceId },
         include: {
@@ -115,6 +123,10 @@ export async function processInvoiceReturn(
           pharmacy: { select: { governorateId: true, name: true } },
         },
       });
+
+      if (invoice.status === InvoiceStatus.CANCELLED) {
+        throw new Error("لا يمكن تسجيل مرتجع على فاتورة ملغاة بالكامل");
+      }
 
       // ── Find the SUB-warehouse in the client's governorate for returns ──
       const subWarehouse = await tx.warehouse.findFirst({
@@ -146,8 +158,8 @@ export async function processInvoiceReturn(
         // Calculate total return amount from manually-entered prices
         let totalReturnAmount = 0;
         const returnItemsData = legacyItems.map((item) => {
-          const lineTotal = item.quantity * item.unitPrice;
-          totalReturnAmount += lineTotal;
+          const lineTotal = roundMoney(item.quantity * item.unitPrice);
+          totalReturnAmount = roundMoney(totalReturnAmount + lineTotal);
           return {
             productId: item.productId,
             quantity: item.quantity,
@@ -155,6 +167,29 @@ export async function processInvoiceReturn(
             lineTotal,
           };
         });
+
+        // A legacy invoice has no item rows, so cap returns by its original
+        // monetary value. This prevents repeated "returns" from creating
+        // unlimited stock/client credit.
+        const priorLegacyReturns = await tx.return.aggregate({
+          where: { invoiceId: invoice.id },
+          _sum: { totalAmount: true },
+        });
+        const originalLegacyDebt = roundMoney(
+          Number(invoice.subtotal) - Number(invoice.discountAmount)
+        );
+        const alreadyReturned = roundMoney(
+          Number(priorLegacyReturns._sum.totalAmount ?? 0)
+        );
+        const returnableAmount = roundMoney(
+          Math.max(0, originalLegacyDebt - alreadyReturned)
+        );
+
+        if (totalReturnAmount > returnableAmount + 0.005) {
+          throw new Error(
+            `قيمة المرتجع (${totalReturnAmount.toFixed(2)}) أكبر من المتبقي القابل للارتجاع (${returnableAmount.toFixed(2)})`
+          );
+        }
 
         // 1. Create Return Record
         const returnRecord = await tx.return.create({
@@ -234,7 +269,7 @@ export async function processInvoiceReturn(
 
         const newTotal = Math.max(0, Number(invoice.total) - totalReturnAmount);
 
-        let newStatus = invoice.status;
+        let newStatus: InvoiceStatus = invoice.status;
         if (newTotal <= 0) {
           newStatus = InvoiceStatus.CANCELLED;
         } else if (newRemaining <= 0.01) {
@@ -274,34 +309,99 @@ export async function processInvoiceReturn(
         throw new Error("أضف منتجاً واحداً على الأقل للارتجاع");
       }
 
+      // Cumulative quantities already returned for this invoice.
+      const priorReturnItems = await tx.returnItem.findMany({
+        where: { return: { invoiceId: invoice.id } },
+        select: { productId: true, quantity: true },
+      });
+      const priorReturnedByProduct = new Map<string, number>();
+      for (const item of priorReturnItems) {
+        priorReturnedByProduct.set(
+          item.productId,
+          (priorReturnedByProduct.get(item.productId) ?? 0) +
+            Number(item.quantity)
+        );
+      }
+
+      // Aggregate invoice rows by product so duplicate lines are handled
+      // correctly. The weighted net value preserves the invoice-level
+      // discount when the return is posted.
+      const invoiceSubtotal = Number(invoice.subtotal);
+      const invoiceNetTotal = Math.max(
+        0,
+        invoiceSubtotal - Number(invoice.discountAmount)
+      );
+      const invoiceDiscountFactor =
+        invoiceSubtotal > 0 ? invoiceNetTotal / invoiceSubtotal : 1;
+
+      const invoiceItemsByProduct = new Map<
+        string,
+        { quantity: number; netValue: number }
+      >();
+      for (const item of invoice.items) {
+        const quantity = Number(item.quantity);
+        const storedDiscountedPrice = Number(item.discountedUnitPrice);
+        const effectiveUnitPrice =
+          storedDiscountedPrice > 0
+            ? storedDiscountedPrice
+            : Number(item.unitPrice) * invoiceDiscountFactor;
+
+        const existing = invoiceItemsByProduct.get(item.productId);
+        invoiceItemsByProduct.set(item.productId, {
+          quantity: (existing?.quantity ?? 0) + quantity,
+          netValue:
+            (existing?.netValue ?? 0) + quantity * effectiveUnitPrice,
+        });
+      }
+
+      // Aggregate the request as well: two rows for the same product must not
+      // each pass the limit independently.
+      const requestedByProduct = new Map<string, number>();
+      for (const item of standardItems) {
+        requestedByProduct.set(
+          item.productId,
+          (requestedByProduct.get(item.productId) ?? 0) + item.quantity
+        );
+      }
+
       let totalReturnAmount = 0;
-      const returnItemsData = [];
+      const returnItemsData: Array<{
+        productId: string;
+        quantity: number;
+        unitPrice: number;
+        lineTotal: number;
+      }> = [];
 
-      for (const returnItem of standardItems) {
-        // Find the corresponding item in the invoice to get its discountedUnitPrice
-        const invItem = invoice.items.find((i) => i.productId === returnItem.productId);
-        if (!invItem) {
-          throw new Error(`المنتج غير موجود في الفاتورة`);
+      for (const [productId, quantity] of Array.from(
+        requestedByProduct.entries()
+      )) {
+        const invoiceItem = invoiceItemsByProduct.get(productId);
+        if (!invoiceItem) {
+          throw new Error("المنتج غير موجود في الفاتورة");
         }
-        if (returnItem.quantity > Number(invItem.quantity)) {
-          throw new Error(`الكمية المرتجعة أكبر من الكمية المباعة للمنتج`);
+
+        const alreadyReturned = priorReturnedByProduct.get(productId) ?? 0;
+        const remainingQuantity = invoiceItem.quantity - alreadyReturned;
+
+        if (quantity > remainingQuantity + 1e-9) {
+          throw new Error(
+            `الكمية المرتجعة من المنتج أكبر من الكمية المتبقية. ` +
+              `المتاح للارتجاع: ${Math.max(0, remainingQuantity)}، المطلوب: ${quantity}`
+          );
         }
 
-        // CRITICAL: Use discountedUnitPrice — this is the effective price per unit
-        // after the invoice discount was applied, stored at invoice creation time.
-        const effectiveUnitPrice = Number(invItem.discountedUnitPrice) > 0
-          ? Number(invItem.discountedUnitPrice)
-          : Number(invItem.unitPrice); // fallback for legacy invoices without discountedUnitPrice
+        const effectiveUnitPrice =
+          invoiceItem.quantity > 0
+            ? invoiceItem.netValue / invoiceItem.quantity
+            : 0;
+        const lineTotal = roundMoney(quantity * effectiveUnitPrice);
 
-        const discountedLineTotal = returnItem.quantity * effectiveUnitPrice;
-
-        totalReturnAmount += discountedLineTotal;
-
+        totalReturnAmount = roundMoney(totalReturnAmount + lineTotal);
         returnItemsData.push({
-          productId: returnItem.productId,
-          quantity: returnItem.quantity,
-          unitPrice: effectiveUnitPrice,
-          lineTotal: discountedLineTotal,
+          productId,
+          quantity,
+          unitPrice: roundMoney(effectiveUnitPrice),
+          lineTotal,
         });
       }
 
@@ -322,7 +422,7 @@ export async function processInvoiceReturn(
 
       // 2. Return items to the client's governorate warehouse
       if (targetWarehouse) {
-        for (const item of standardItems) {
+        for (const item of returnItemsData) {
           await tx.stockItem.upsert({
             where: {
               warehouseId_productId: {
@@ -349,7 +449,7 @@ export async function processInvoiceReturn(
             targetWarehouseId: targetWarehouse.id,
             notes: `مرتجع رقم ${returnNumber} من ${invoice.pharmacy.name}`,
             items: {
-              create: standardItems.map((item) => ({
+              create: returnItemsData.map((item) => ({
                 productId: item.productId,
                 quantity: item.quantity,
               })),
@@ -394,7 +494,7 @@ export async function processInvoiceReturn(
       }
 
       // Update invoice status
-      let newStatus = invoice.status;
+      let newStatus: InvoiceStatus = invoice.status;
       if (newTotal <= 0) {
         newStatus = InvoiceStatus.CANCELLED;
       } else if (newRemaining <= 0.01) {
@@ -451,6 +551,20 @@ export async function deleteSalesReturn(
     }
 
     const result = await prisma.$transaction(async (tx) => {
+      const returnHeader = await tx.return.findUnique({
+        where: { id: returnId },
+        select: { invoiceId: true },
+      });
+
+      if (!returnHeader) {
+        throw new Error("المرتجع غير موجود أو تم حذفه مسبقاً");
+      }
+
+      // Serialize deletion with new returns for the same invoice.
+      await tx.$queryRaw`
+        SELECT id FROM invoices WHERE id = ${returnHeader.invoiceId} FOR UPDATE
+      `;
+
       const salesReturn = await tx.return.findUnique({
         where: { id: returnId },
         include: {
@@ -551,34 +665,18 @@ export async function deleteSalesReturn(
         for (const [productId, entry] of Array.from(
           quantityByProduct.entries()
         )) {
-          const stockItem = await tx.stockItem.findUnique({
-            where: {
-              warehouseId_productId: {
-                warehouseId: stockWarehouseId,
-                productId,
-              },
-            },
-            select: { quantity: true },
-          });
-
-          const available = Number(stockItem?.quantity ?? 0);
-          if (!stockItem || available + 1e-9 < entry.quantity) {
+          try {
+            await decrementStockOrThrow(tx, {
+              warehouseId: stockWarehouseId,
+              productId,
+              quantity: entry.quantity,
+              productName: entry.productName,
+            });
+          } catch {
             throw new Error(
-              `لا يمكن حذف المرتجع: الكمية المتاحة من "${entry.productName}" في المخزن (${available}) أقل من الكمية التي أدخلها المرتجع (${entry.quantity}). قم بتعديل المخزون أولاً.`
+              `لا يمكن حذف المرتجع: الكمية المتاحة من "${entry.productName}" أقل من الكمية التي أدخلها المرتجع (${entry.quantity}). قم بتعديل المخزون أولاً.`
             );
           }
-
-          await tx.stockItem.update({
-            where: {
-              warehouseId_productId: {
-                warehouseId: stockWarehouseId,
-                productId,
-              },
-            },
-            data: {
-              quantity: { decrement: entry.quantity },
-            },
-          });
         }
       }
 
@@ -628,17 +726,11 @@ export async function deleteSalesReturn(
         }
 
         if (cashToRestore !== 0) {
-          const treasury = await tx.treasury.findFirst();
-          if (treasury) {
-            await tx.treasury.update({
-              where: { id: treasury.id },
-              data: {
-                currentBalance: roundMoney(
-                  Number(treasury.currentBalance) + cashToRestore
-                ),
-              },
-            });
-          }
+          const treasury = await getOrCreateTreasury(tx);
+          await tx.treasury.update({
+            where: { id: treasury.id },
+            data: { currentBalance: { increment: cashToRestore } },
+          });
         }
 
         await tx.transaction.deleteMany({

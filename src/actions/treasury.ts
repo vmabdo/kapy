@@ -3,9 +3,14 @@ import { handleActionError } from "@/lib/error-handler";
 
 import { prisma } from "@/lib/prisma";
 import { requireRole } from "@/lib/auth-utils";
+import { getOrCreateTreasury } from "@/lib/treasury";
 import { revalidatePath } from "next/cache";
 import { TransactionType, TransactionCategory, UserRole } from "@prisma/client";
 import { z } from "zod";
+
+function roundMoney(value: number): number {
+  return Math.round((value + Number.EPSILON) * 100) / 100;
+}
 
 const RecordTransactionSchema = z.object({
   type: z.nativeEnum(TransactionType),
@@ -30,51 +35,57 @@ export async function recordTreasuryTransaction(
     ]);
 
     const data = RecordTransactionSchema.parse(formData);
+    const amount = roundMoney(Number(data.amount));
 
     await prisma.$transaction(async (tx) => {
-      // 1. Get or create the treasury
-      let treasury = await tx.treasury.findFirst();
-      if (!treasury) {
-        treasury = await tx.treasury.create({
-          data: { name: "الخزينة الرئيسية", currentBalance: 0 },
-        });
-      }
-
-      const currentBalance = Number(treasury.currentBalance);
-
-      // 2. Check balance for CASH_OUT transactions
-      if (
-        (data.type === TransactionType.CASH_OUT ||
-          data.type === TransactionType.TRANSFER_OUT) &&
-        data.amount > currentBalance
-      ) {
-        throw new Error(
-          `رصيد الخزينة الحالي (${currentBalance.toFixed(2)} ج.م) لا يكفي لهذه المعاملة`
-        );
-      }
-
-      // 3. Calculate new balance
+      const treasury = await getOrCreateTreasury(tx);
       const isDebit =
         data.type === TransactionType.CASH_OUT ||
         data.type === TransactionType.TRANSFER_OUT;
-      const newBalance = isDebit
-        ? currentBalance - data.amount
-        : currentBalance + data.amount;
 
-      // 4. Update treasury balance
-      await tx.treasury.update({
+      if (isDebit) {
+        // Conditional atomic decrement: two simultaneous withdrawals can
+        // never both consume the same balance.
+        const updated = await tx.treasury.updateMany({
+          where: {
+            id: treasury.id,
+            currentBalance: { gte: amount },
+          },
+          data: {
+            currentBalance: { decrement: amount },
+          },
+        });
+
+        if (updated.count !== 1) {
+          const current = await tx.treasury.findUnique({
+            where: { id: treasury.id },
+            select: { currentBalance: true },
+          });
+          throw new Error(
+            `رصيد الخزينة الحالي (${Number(
+              current?.currentBalance ?? 0
+            ).toFixed(2)} ج.م) لا يكفي لهذه المعاملة`
+          );
+        }
+      } else {
+        await tx.treasury.update({
+          where: { id: treasury.id },
+          data: { currentBalance: { increment: amount } },
+        });
+      }
+
+      const updatedTreasury = await tx.treasury.findUniqueOrThrow({
         where: { id: treasury.id },
-        data: { currentBalance: newBalance },
+        select: { currentBalance: true },
       });
 
-      // 5. Create transaction record using correct model name: tx.transaction
       await tx.transaction.create({
         data: {
           treasuryId: treasury.id,
           type: data.type,
           category: data.category,
-          amount: data.amount,
-          balanceAfter: newBalance,
+          amount,
+          balanceAfter: updatedTreasury.currentBalance,
           description: data.description || null,
           referenceNo: data.referenceNo || null,
         },
