@@ -4,8 +4,68 @@ import { handleActionError } from "@/lib/error-handler";
 import { prisma } from "@/lib/prisma";
 import { requireRole } from "@/lib/auth-utils";
 import { revalidatePath } from "next/cache";
-import { InvoiceStatus, InvoiceType, UserRole } from "@prisma/client";
+import {
+  InvoiceStatus,
+  InvoiceType,
+  TransactionType,
+  UserRole,
+} from "@prisma/client";
 import { z } from "zod";
+
+// ─── Reversal helpers ─────────────────────────────────────────
+
+function roundMoney(value: number): number {
+  return Math.round((value + Number.EPSILON) * 100) / 100;
+}
+
+/**
+ * Matches a return number only when it appears as a complete token.
+ * Prevents RET-202610-1 from matching RET-202610-10.
+ */
+function containsExactReference(
+  value: string | null | undefined,
+  reference: string
+): boolean {
+  if (!value) return false;
+  if (value === reference) return true;
+
+  const escaped = reference.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  return new RegExp(`(?<![A-Za-z0-9_-])${escaped}(?![A-Za-z0-9_-])`).test(value);
+}
+
+function resolveInvoiceStatus(
+  total: number,
+  paidAmount: number,
+  remainingAmount: number
+): InvoiceStatus {
+  if (total <= 0.005) return InvoiceStatus.CANCELLED;
+  if (remainingAmount <= 0.005) return InvoiceStatus.PAID;
+  if (paidAmount > 0.005) return InvoiceStatus.PARTIALLY_PAID;
+  return InvoiceStatus.CONFIRMED;
+}
+
+function revalidateReturnRelatedPaths(options: {
+  invoiceId?: string;
+  pharmacyId?: string;
+}) {
+  revalidatePath("/dashboard/sales");
+  if (options.invoiceId) {
+    revalidatePath(`/dashboard/sales/${options.invoiceId}`);
+  }
+  if (options.pharmacyId) {
+    revalidatePath("/dashboard/pharmacies");
+    revalidatePath(`/dashboard/pharmacies/${options.pharmacyId}`);
+    revalidatePath(`/dashboard/pharmacies/${options.pharmacyId}/statement`);
+    revalidatePath("/dashboard/companies");
+    revalidatePath(`/dashboard/companies/${options.pharmacyId}`);
+    revalidatePath(`/dashboard/companies/${options.pharmacyId}/statement`);
+  }
+  revalidatePath("/dashboard/treasury");
+  revalidatePath("/dashboard/reps");
+  revalidatePath("/dashboard/sales-reps");
+  revalidatePath("/dashboard/reports");
+  revalidatePath("/dashboard/reports/daily");
+}
 
 // ─── Item schemas ─────────────────────────────────────────────
 
@@ -359,6 +419,309 @@ export async function processInvoiceReturn(
     revalidatePath("/dashboard/sales");
     revalidatePath(`/dashboard/sales/${data.invoiceId}`);
     return { success: true, message: "تم تسجيل المرتجع بنجاح" };
+  } catch (e: unknown) {
+    return { success: false, error: handleActionError(e) };
+  }
+}
+
+/**
+ * Atomically reverses and deletes a sales return.
+ *
+ * Stock that the return originally added must still be in the warehouse. If it
+ * has already been sold/transferred, the deletion is rejected instead of
+ * pushing stock negative.
+ *
+ * Credit/debt returns restore the invoice receivable and the client balance.
+ * Cash refunds restore the invoice paid amount and remove the treasury outflow
+ * (when one exists).
+ */
+export async function deleteSalesReturn(
+  returnId: string
+): Promise<{ success: true; message: string } | { success: false; error: string }> {
+  try {
+    await requireRole([
+      UserRole.SUPER_ADMIN,
+      UserRole.ADMIN,
+      UserRole.SALES_MANAGER,
+      UserRole.ACCOUNTANT,
+    ]);
+
+    if (!returnId || returnId.trim() === "") {
+      throw new Error("معرف المرتجع مطلوب");
+    }
+
+    const result = await prisma.$transaction(async (tx) => {
+      const salesReturn = await tx.return.findUnique({
+        where: { id: returnId },
+        include: {
+          items: {
+            include: {
+              product: { select: { id: true, name: true } },
+            },
+          },
+          invoice: {
+            include: {
+              pharmacy: {
+                select: { id: true, name: true, governorateId: true },
+              },
+            },
+          },
+        },
+      });
+
+      if (!salesReturn) {
+        throw new Error("المرتجع غير موجود أو تم حذفه مسبقاً");
+      }
+
+      const invoice = salesReturn.invoice;
+      const totalAmount = roundMoney(Number(salesReturn.totalAmount));
+
+      if (!Number.isFinite(totalAmount) || totalAmount < 0) {
+        throw new Error("قيمة المرتجع غير صالحة ولا يمكن عكسها");
+      }
+
+      // ── 1. Reverse the stock that was added by this return ───
+      const movementCandidates = await tx.stockMovement.findMany({
+        where: {
+          movementType: "RETURN_INBOUND",
+          OR: [
+            { notes: { contains: salesReturn.returnNumber } },
+            { referenceNumber: { contains: salesReturn.returnNumber } },
+          ],
+        },
+        select: {
+          id: true,
+          targetWarehouseId: true,
+          notes: true,
+          referenceNumber: true,
+        },
+        orderBy: { movedAt: "desc" },
+      });
+
+      const returnMovement = movementCandidates.find(
+        (movement) =>
+          containsExactReference(movement.notes, salesReturn.returnNumber) ||
+          containsExactReference(
+            movement.referenceNumber,
+            salesReturn.returnNumber
+          )
+      );
+
+      // Prefer the warehouse recorded on the original RETURN_INBOUND movement.
+      // Old/incomplete rows fall back to the same routing used when the return
+      // was created (client governorate SUB warehouse, then MAIN).
+      let stockWarehouseId = returnMovement?.targetWarehouseId ?? null;
+
+      if (!stockWarehouseId) {
+        const subWarehouse = await tx.warehouse.findFirst({
+          where: {
+            type: "SUB",
+            governorateId: invoice.pharmacy.governorateId,
+            isActive: true,
+          },
+          select: { id: true },
+        });
+        const mainWarehouse = subWarehouse
+          ? null
+          : await tx.warehouse.findFirst({
+              where: { type: "MAIN" },
+              select: { id: true },
+            });
+        stockWarehouseId = subWarehouse?.id ?? mainWarehouse?.id ?? null;
+      }
+
+      if (stockWarehouseId) {
+        // Group by product in case duplicate lines were recorded.
+        const quantityByProduct = new Map<
+          string,
+          { quantity: number; productName: string }
+        >();
+
+        for (const item of salesReturn.items) {
+          const quantity = Number(item.quantity);
+          if (!Number.isFinite(quantity) || quantity <= 0) continue;
+
+          const existing = quantityByProduct.get(item.productId);
+          quantityByProduct.set(item.productId, {
+            quantity: (existing?.quantity ?? 0) + quantity,
+            productName: item.product.name,
+          });
+        }
+
+        for (const [productId, entry] of Array.from(
+          quantityByProduct.entries()
+        )) {
+          const stockItem = await tx.stockItem.findUnique({
+            where: {
+              warehouseId_productId: {
+                warehouseId: stockWarehouseId,
+                productId,
+              },
+            },
+            select: { quantity: true },
+          });
+
+          const available = Number(stockItem?.quantity ?? 0);
+          if (!stockItem || available + 1e-9 < entry.quantity) {
+            throw new Error(
+              `لا يمكن حذف المرتجع: الكمية المتاحة من "${entry.productName}" في المخزن (${available}) أقل من الكمية التي أدخلها المرتجع (${entry.quantity}). قم بتعديل المخزون أولاً.`
+            );
+          }
+
+          await tx.stockItem.update({
+            where: {
+              warehouseId_productId: {
+                warehouseId: stockWarehouseId,
+                productId,
+              },
+            },
+            data: {
+              quantity: { decrement: entry.quantity },
+            },
+          });
+        }
+      }
+
+      if (returnMovement) {
+        await tx.stockMovement.delete({ where: { id: returnMovement.id } });
+      }
+
+      // ── 2. Reverse treasury impact (cash refunds) ────────────
+      const transactionCandidates = await tx.transaction.findMany({
+        where: {
+          OR: [
+            { returnId: salesReturn.id },
+            { description: { contains: salesReturn.returnNumber } },
+            { referenceNo: { contains: salesReturn.returnNumber } },
+          ],
+        },
+      });
+
+      const returnTransactions = transactionCandidates.filter(
+        (transaction) =>
+          transaction.returnId === salesReturn.id ||
+          containsExactReference(
+            transaction.description,
+            salesReturn.returnNumber
+          ) ||
+          containsExactReference(
+            transaction.referenceNo,
+            salesReturn.returnNumber
+          )
+      );
+
+      if (returnTransactions.length > 0) {
+        let cashToRestore = 0;
+        for (const transaction of returnTransactions) {
+          const amount = Number(transaction.amount);
+          if (
+            transaction.type === TransactionType.CASH_OUT ||
+            transaction.type === TransactionType.TRANSFER_OUT
+          ) {
+            cashToRestore += amount;
+          } else if (
+            transaction.type === TransactionType.CASH_IN ||
+            transaction.type === TransactionType.TRANSFER_IN
+          ) {
+            cashToRestore -= amount;
+          }
+        }
+
+        if (cashToRestore !== 0) {
+          const treasury = await tx.treasury.findFirst();
+          if (treasury) {
+            await tx.treasury.update({
+              where: { id: treasury.id },
+              data: {
+                currentBalance: roundMoney(
+                  Number(treasury.currentBalance) + cashToRestore
+                ),
+              },
+            });
+          }
+        }
+
+        await tx.transaction.deleteMany({
+          where: {
+            id: { in: returnTransactions.map((transaction) => transaction.id) },
+          },
+        });
+      }
+
+      // ── 3. Restore invoice + client balances ─────────────────
+      const isCashRefund =
+        invoice.type === InvoiceType.CASH && !invoice.isLegacy;
+
+      const currentTotal = Number(invoice.total);
+      const currentPaid = Number(invoice.paidAmount);
+      const currentRemaining = Number(invoice.remainingAmount);
+
+      let restoredTotal = roundMoney(Math.max(0, currentTotal + totalAmount));
+      let newPaid: number;
+      let newRemaining: number;
+
+      if (isCashRefund) {
+        // The client already paid in full; the return reduced the paid amount.
+        // Restoring the return restores the paid amount as well.
+        newPaid = roundMoney(
+          Math.min(restoredTotal, Math.max(0, currentPaid + totalAmount))
+        );
+        newRemaining = roundMoney(Math.max(0, restoredTotal - newPaid));
+      } else {
+        // Credit / legacy debt: the return reduced the receivable and the
+        // client balance. Both are restored by exactly the return amount.
+        newPaid = roundMoney(Math.max(0, currentPaid));
+        newRemaining = roundMoney(
+          Math.max(0, currentRemaining + totalAmount)
+        );
+
+        // Keep the accounting identity total = paid + remaining even for
+        // over-returns recorded by older app versions.
+        restoredTotal = Math.max(
+          restoredTotal,
+          roundMoney(newPaid + newRemaining)
+        );
+
+        await tx.pharmacy.update({
+          where: { id: invoice.pharmacyId },
+          data: { currentBalance: { increment: totalAmount } },
+        });
+      }
+
+      const newStatus = resolveInvoiceStatus(
+        restoredTotal,
+        newPaid,
+        newRemaining
+      );
+
+      await tx.invoice.update({
+        where: { id: invoice.id },
+        data: {
+          total: restoredTotal,
+          paidAmount: newPaid,
+          remainingAmount: newRemaining,
+          status: newStatus,
+        },
+      });
+
+      await tx.return.delete({ where: { id: salesReturn.id } });
+
+      return {
+        invoiceId: invoice.id,
+        pharmacyId: invoice.pharmacyId,
+        returnNumber: salesReturn.returnNumber,
+      };
+    });
+
+    revalidateReturnRelatedPaths({
+      invoiceId: result.invoiceId,
+      pharmacyId: result.pharmacyId,
+    });
+
+    return {
+      success: true,
+      message: `تم حذف المرتجع ${result.returnNumber} وعكس أثره بنجاح`,
+    };
   } catch (e: unknown) {
     return { success: false, error: handleActionError(e) };
   }

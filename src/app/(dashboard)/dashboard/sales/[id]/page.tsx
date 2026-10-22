@@ -4,6 +4,10 @@ import { getInvoiceById, getAllSalesReps } from "@/queries/sales";
 import { getAllProducts } from "@/queries/inventory";
 import { PaymentForm } from "@/components/sales/payment-form";
 import { ReturnForm } from "@/components/sales/return-form";
+import { InvoiceSalesRepEditor } from "@/components/sales/invoice-sales-rep-editor";
+import { DeletePaymentButton } from "@/components/sales/delete-payment-button";
+import { DeleteReturnButton } from "@/components/sales/delete-return-button";
+import { DeleteInvoiceButton } from "@/components/sales/delete-invoice-button";
 import { PrintButton } from "./print-button";
 import { FileText, ArrowRight, Printer, CheckCircle2, AlertTriangle, Building2, User } from "lucide-react";
 import { formatCurrency, formatDate, cn } from "@/lib/utils";
@@ -108,7 +112,17 @@ export default async function InvoiceDetailPage({ params }: Props) {
             <p className="page-subtitle font-mono mt-1"># {invoice.invoiceNumber}</p>
           </div>
 
-          <PrintButton />
+          <div className="flex items-center gap-2 flex-wrap">
+            <DeleteInvoiceButton
+              invoiceId={invoice.id}
+              invoiceNumber={invoice.invoiceNumber}
+              total={Number(invoice.total)}
+              remainingAmount={Number(invoice.remainingAmount)}
+              isLegacy={invoice.isLegacy}
+              hasReturns={invoice.returns.length > 0}
+            />
+            <PrintButton />
+          </div>
         </div>
       </div>
 
@@ -162,6 +176,19 @@ export default async function InvoiceDetailPage({ params }: Props) {
                   </div>
                 </div>
               </div>
+            </div>
+
+            {/* Quick sales-rep correction (metadata only) */}
+            <div className="mb-8 -mt-4 print:hidden">
+              <InvoiceSalesRepEditor
+                invoiceId={invoice.id}
+                currentSalesRepId={invoice.salesRepId}
+                salesReps={salesReps.map((rep) => ({
+                  id: rep.id,
+                  name: rep.name,
+                  employeeCode: rep.employeeCode,
+                }))}
+              />
             </div>
 
             {/* Items Table / Legacy Debt Banner */}
@@ -323,17 +350,23 @@ export default async function InvoiceDetailPage({ params }: Props) {
               <div className="space-y-3">
                 {invoice.payments.map((payment) => (
                   <div key={payment.id} className="p-3 bg-muted/30 rounded-lg border border-border/50 space-y-2">
-                    <div className="flex justify-between items-center">
+                    <div className="flex justify-between items-start gap-2">
                       <div>
                         <p className="font-semibold text-green-600">{formatCurrency(payment.amount.toString())}</p>
                         <p className="text-[10px] text-muted-foreground mt-0.5">{formatDate(payment.paidAt)}</p>
                         <p className="text-[10px] text-muted-foreground">{payment.method === "CASH" ? "نقدي" : payment.method === "BANK_TRANSFER" ? "تحويل" : "شيك"}</p>
                       </div>
-                      {payment.referenceNo && (
-                        <span className="text-[10px] bg-muted px-2 py-0.5 rounded text-muted-foreground max-w-[100px] truncate">
-                          {payment.referenceNo}
-                        </span>
-                      )}
+                      <div className="flex items-center gap-1.5">
+                        {payment.referenceNo && (
+                          <span className="text-[10px] bg-muted px-2 py-0.5 rounded text-muted-foreground max-w-[100px] truncate">
+                            {payment.referenceNo}
+                          </span>
+                        )}
+                        <DeletePaymentButton
+                          paymentId={payment.id}
+                          amount={Number(payment.amount)}
+                        />
+                      </div>
                     </div>
                     {/* Display target items for legacy payments */}
                     {(payment as any).targetItems && (payment as any).targetItems.length > 0 && (
@@ -353,6 +386,70 @@ export default async function InvoiceDetailPage({ params }: Props) {
                     )}
                   </div>
                 ))}
+              </div>
+            </div>
+          )}
+
+          {/* Returns History */}
+          {invoice.returns.length > 0 && (
+            <div className="bg-card border border-border rounded-xl p-5">
+              <h2 className="font-semibold text-sm mb-4 flex items-center justify-between gap-2">
+                <span>سجل المرتجعات</span>
+                <span className="text-[10px] font-normal text-muted-foreground">
+                  {invoice.returns.length} مرتجع
+                </span>
+              </h2>
+              <div className="space-y-3">
+                {invoice.returns.map((returnRecord) => {
+                  const isCashRefund =
+                    invoice.type === InvoiceType.CASH && !invoice.isLegacy;
+
+                  return (
+                    <div
+                      key={returnRecord.id}
+                      className="p-3 bg-muted/30 rounded-lg border border-border/50 space-y-2"
+                    >
+                      <div className="flex justify-between items-start gap-2">
+                        <div>
+                          <p className="font-semibold text-red-600">
+                            - {formatCurrency(returnRecord.totalAmount.toString())}
+                          </p>
+                          <p className="text-[10px] text-muted-foreground mt-0.5">
+                            {formatDate(returnRecord.returnDate)} ·{" "}
+                            <span className="font-mono">{returnRecord.returnNumber}</span>
+                          </p>
+                          {returnRecord.reason && (
+                            <p className="text-[11px] text-muted-foreground mt-1">
+                              {returnRecord.reason}
+                            </p>
+                          )}
+                        </div>
+                        <DeleteReturnButton
+                          returnId={returnRecord.id}
+                          returnNumber={returnRecord.returnNumber}
+                          amount={Number(returnRecord.totalAmount)}
+                          isCashRefund={isCashRefund}
+                        />
+                      </div>
+
+                      {returnRecord.items.length > 0 && (
+                        <div className="pt-2 border-t border-border/40 space-y-1">
+                          {returnRecord.items.map((returnItem) => (
+                            <div
+                              key={returnItem.id}
+                              className="flex justify-between items-center gap-2 text-[11px] text-muted-foreground"
+                            >
+                              <span>{returnItem.product.name}</span>
+                              <span className="font-mono text-foreground">
+                                × {Number(returnItem.quantity)}
+                              </span>
+                            </div>
+                          ))}
+                        </div>
+                      )}
+                    </div>
+                  );
+                })}
               </div>
             </div>
           )}

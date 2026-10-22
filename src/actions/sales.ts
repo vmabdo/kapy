@@ -4,7 +4,15 @@ import { handleActionError } from "@/lib/error-handler";
 import { prisma } from "@/lib/prisma";
 import { requireRole, requireAuth } from "@/lib/auth-utils";
 import { revalidatePath } from "next/cache";
-import { DiscountType, InvoiceStatus, InvoiceType, UserRole, TransactionType, TransactionCategory } from "@prisma/client";
+import {
+  DiscountType,
+  InvoiceStatus,
+  InvoiceType,
+  Prisma,
+  UserRole,
+  TransactionType,
+  TransactionCategory,
+} from "@prisma/client";
 import { z } from "zod";
 import { addDays, format } from "date-fns";
 import { calculateDiscountAmount, calculateNetTotal } from "@/lib/utils";
@@ -137,6 +145,192 @@ const SetRepMonthlyTargetSchema = z.object({
 type ActionResult<T = void> =
   | { success: true; data: T; message?: string }
   | { success: false; error: string };
+
+// ─── Reversal helpers ─────────────────────────────────────────
+
+function roundMoney(value: number): number {
+  return Math.round((value + Number.EPSILON) * 100) / 100;
+}
+
+/**
+ * Matches a document number only when it appears as a complete token.
+ * This prevents `INV-20261022-1` from accidentally matching
+ * `INV-20261022-10` inside a free-text description.
+ */
+function containsExactReference(
+  value: string | null | undefined,
+  reference: string
+): boolean {
+  if (!value) return false;
+  if (value === reference) return true;
+
+  const escaped = reference.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  return new RegExp(`(?<![A-Za-z0-9_-])${escaped}(?![A-Za-z0-9_-])`).test(value);
+}
+
+function resolveInvoiceStatusAfterPaymentReversal(
+  paidAmount: number,
+  remainingAmount: number
+): InvoiceStatus {
+  if (remainingAmount <= 0.005) return InvoiceStatus.PAID;
+  if (paidAmount > 0.005) return InvoiceStatus.PARTIALLY_PAID;
+  return InvoiceStatus.CONFIRMED;
+}
+
+/** Restores `pharmacy.currentBalance` by a payment amount. */
+async function restoreClientDebtForPayment(
+  tx: Prisma.TransactionClient,
+  pharmacyId: string,
+  amount: number
+) {
+  if (amount <= 0) return;
+  await tx.pharmacy.update({
+    where: { id: pharmacyId },
+    data: { currentBalance: { increment: amount } },
+  });
+}
+
+/**
+ * Reverses the stored monthly-target progress that was awarded when a payment
+ * was collected. Quantities are clamped at zero so deleting a payment can
+ * never make a target negative, even if the target was edited afterwards.
+ */
+async function reverseStoredRepTargetProgress(
+  tx: Prisma.TransactionClient,
+  salesRepId: string,
+  paymentDate: Date,
+  quantityByProduct: Map<string, number>
+) {
+  if (quantityByProduct.size === 0) return;
+
+  const target = await tx.repMonthlyTarget.findUnique({
+    where: {
+      salesRepId_month_year: {
+        salesRepId,
+        month: paymentDate.getMonth() + 1,
+        year: paymentDate.getFullYear(),
+      },
+    },
+    include: { items: true },
+  });
+  if (!target) return;
+
+  for (const [productId, quantity] of Array.from(
+    quantityByProduct.entries()
+  )) {
+    if (quantity <= 0) continue;
+    const targetItem = target.items.find(
+      (item) => item.productId === productId
+    );
+    if (!targetItem) continue;
+
+    await tx.repMonthlyTargetItem.update({
+      where: { id: targetItem.id },
+      data: {
+        achievedQuantity: Math.max(
+          0,
+          Number(targetItem.achievedQuantity) - quantity
+        ),
+      },
+    });
+  }
+}
+
+/** Builds product -> quantity totals for a payment's regular item rows. */
+function collectPaymentItemQuantities(
+  paymentItems: Array<{ productId: string; paidQuantity: unknown }>
+): Map<string, number> {
+  const quantities = new Map<string, number>();
+  for (const item of paymentItems) {
+    const quantity = Number(item.paidQuantity);
+    if (!Number.isFinite(quantity) || quantity <= 0) continue;
+    quantities.set(
+      item.productId,
+      (quantities.get(item.productId) ?? 0) + quantity
+    );
+  }
+  return quantities;
+}
+
+/** Reverses stored target progress for every payment of an invoice. */
+async function reverseTargetsForInvoicePayments(
+  tx: Prisma.TransactionClient,
+  salesRepId: string | null,
+  payments: Array<{
+    paidAt: Date;
+    paymentItems: Array<{ productId: string; paidQuantity: unknown }>;
+    targetItems: Array<{
+      productId: string;
+      salesRepId: string;
+      quantity: number;
+    }>;
+  }>
+) {
+  for (const payment of payments) {
+    if (salesRepId && payment.paymentItems.length > 0) {
+      await reverseStoredRepTargetProgress(
+        tx,
+        salesRepId,
+        payment.paidAt,
+        collectPaymentItemQuantities(payment.paymentItems)
+      );
+    }
+
+    if (payment.targetItems.length > 0) {
+      const byRep = new Map<string, Map<string, number>>();
+      for (const targetItem of payment.targetItems) {
+        const quantities = byRep.get(targetItem.salesRepId) ?? new Map();
+        quantities.set(
+          targetItem.productId,
+          (quantities.get(targetItem.productId) ?? 0) +
+            Number(targetItem.quantity)
+        );
+        byRep.set(targetItem.salesRepId, quantities);
+      }
+
+      for (const [repId, quantities] of Array.from(byRep.entries())) {
+        await reverseStoredRepTargetProgress(
+          tx,
+          repId,
+          payment.paidAt,
+          quantities
+        );
+      }
+    }
+  }
+}
+
+/**
+ * Revalidates every screen whose data depends on an invoice/payment/return.
+ * Kept in one place so all reversal actions invalidate the same caches.
+ */
+function revalidateInvoiceRelatedPaths(options: {
+  invoiceId?: string;
+  pharmacyId?: string;
+  salesRepIds?: Array<string | null | undefined>;
+}) {
+  revalidatePath("/dashboard/sales");
+  if (options.invoiceId) {
+    revalidatePath(`/dashboard/sales/${options.invoiceId}`);
+  }
+  if (options.pharmacyId) {
+    revalidatePath("/dashboard/pharmacies");
+    revalidatePath(`/dashboard/pharmacies/${options.pharmacyId}`);
+    revalidatePath(`/dashboard/pharmacies/${options.pharmacyId}/statement`);
+    revalidatePath("/dashboard/companies");
+    revalidatePath(`/dashboard/companies/${options.pharmacyId}`);
+    revalidatePath(`/dashboard/companies/${options.pharmacyId}/statement`);
+  }
+  revalidatePath("/dashboard/treasury");
+  revalidatePath("/dashboard/reps");
+  revalidatePath("/dashboard/sales-reps");
+  revalidatePath("/dashboard/reports");
+  revalidatePath("/dashboard/reports/daily");
+
+  for (const repId of Array.from(new Set(options.salesRepIds ?? []))) {
+    if (repId) revalidatePath(`/dashboard/sales-reps/${repId}`);
+  }
+}
 
 // ─── Actions ──────────────────────────────────────────────────
 
@@ -542,6 +736,74 @@ export async function createInvoice(
   }
 }
 
+/**
+ * Quick-fix for a wrongly selected sales rep on an invoice.
+ *
+ * Changing the rep does not touch stock, treasury, client debt or the invoice
+ * totals — it is a pure metadata correction.
+ */
+export async function updateInvoiceSalesRep(
+  invoiceId: string,
+  salesRepId: string | null
+): Promise<ActionResult> {
+  try {
+    await requireRole([
+      UserRole.SUPER_ADMIN,
+      UserRole.ADMIN,
+      UserRole.SALES_MANAGER,
+    ]);
+
+    if (!invoiceId || invoiceId.trim() === "") {
+      throw new Error("معرف الفاتورة مطلوب");
+    }
+
+    const invoice = await prisma.invoice.findUnique({
+      where: { id: invoiceId },
+      select: {
+        id: true,
+        pharmacyId: true,
+        salesRepId: true,
+        invoiceNumber: true,
+      },
+    });
+    if (!invoice) {
+      throw new Error("الفاتورة غير موجودة");
+    }
+
+    const newSalesRepId =
+      salesRepId && salesRepId.trim() !== "" ? salesRepId.trim() : null;
+
+    if (newSalesRepId) {
+      const rep = await prisma.salesRep.findUnique({
+        where: { id: newSalesRepId },
+        select: { id: true },
+      });
+      if (!rep) {
+        throw new Error("المندوب المحدد غير موجود");
+      }
+    }
+
+    await prisma.invoice.update({
+      where: { id: invoiceId },
+      data: { salesRepId: newSalesRepId },
+    });
+
+    revalidateInvoiceRelatedPaths({
+      invoiceId: invoice.id,
+      pharmacyId: invoice.pharmacyId,
+      salesRepIds: [invoice.salesRepId, newSalesRepId],
+    });
+
+    return {
+      success: true,
+      data: undefined,
+      message: "تم تحديث مندوب الفاتورة بنجاح",
+    };
+  } catch (e: unknown) {
+    return { success: false, error: handleActionError(e) };
+  }
+}
+
 export async function recordInvoicePayment(
   formData: z.infer<typeof RecordPaymentSchema>
 ): Promise<ActionResult> {
@@ -755,6 +1017,484 @@ export async function recordInvoicePayment(
       revalidatePath(`/dashboard/sales-reps/${creditedRepId}`);
     }
     return { success: true, data: undefined, message: "تم تسجيل الدفعة بنجاح" };
+  } catch (e: unknown) {
+    return { success: false, error: handleActionError(e) };
+  }
+}
+
+/**
+ * Reverses a single payment atomically.
+ *
+ * Effects:
+ *  - Invoice paid/remaining amounts and status are restored.
+ *  - The client's outstanding balance is increased by the payment amount.
+ *  - The matching treasury cash-in is removed and the treasury balance is
+ *    reduced by the exact same amount.
+ *  - Payment target items (legacy rep-target tracking) are deleted.
+ */
+export async function deleteInvoicePayment(paymentId: string): Promise<ActionResult> {
+  try {
+    await requireRole([
+      UserRole.SUPER_ADMIN,
+      UserRole.ADMIN,
+      UserRole.ACCOUNTANT,
+      UserRole.SALES_MANAGER,
+    ]);
+
+    if (!paymentId || paymentId.trim() === "") {
+      throw new Error("معرف الدفعة مطلوب");
+    }
+
+    const result = await prisma.$transaction(async (tx) => {
+      const payment = await tx.payment.findUnique({
+        where: { id: paymentId },
+        include: {
+          invoice: {
+            include: {
+              pharmacy: { select: { id: true, name: true } },
+            },
+          },
+          paymentItems: true,
+          targetItems: true,
+        },
+      });
+
+      if (!payment) {
+        throw new Error("الدفعة غير موجودة أو تم حذفها مسبقاً");
+      }
+
+      const invoice = payment.invoice;
+      const amount = roundMoney(Number(payment.amount));
+
+      if (!Number.isFinite(amount) || amount <= 0) {
+        throw new Error("قيمة الدفعة غير صالحة ولا يمكن عكسها");
+      }
+
+      const newPaidAmount = roundMoney(
+        Math.max(0, Number(invoice.paidAmount) - amount)
+      );
+      const newRemainingAmount = roundMoney(
+        Number(invoice.remainingAmount) + amount
+      );
+      const newStatus = resolveInvoiceStatusAfterPaymentReversal(
+        newPaidAmount,
+        newRemainingAmount
+      );
+
+      // 1. Restore the invoice balances.
+      await tx.invoice.update({
+        where: { id: invoice.id },
+        data: {
+          paidAmount: newPaidAmount,
+          remainingAmount: newRemainingAmount,
+          status: newStatus,
+        },
+      });
+
+      // 2. Restore the client's debt.
+      await restoreClientDebtForPayment(tx, invoice.pharmacyId, amount);
+
+      // 3. Reverse the treasury impact. Payments always create a cash-in row;
+      // if the row is missing (old data / manual cleanup) the balance is still
+      // reduced by the payment amount so cash and documents stay aligned.
+      const treasury = await tx.treasury.findFirst();
+      if (treasury) {
+        const newTreasuryBalance = roundMoney(
+          Number(treasury.currentBalance) - amount
+        );
+        await tx.treasury.update({
+          where: { id: treasury.id },
+          data: { currentBalance: newTreasuryBalance },
+        });
+      }
+
+      let treasuryTransaction = await tx.transaction.findFirst({
+        where: { paymentId: payment.id },
+      });
+
+      // Fallback for old rows created before the `paymentId` link existed:
+      // match the invoice number + exact payment amount in the ledger text.
+      if (!treasuryTransaction) {
+        const candidates = await tx.transaction.findMany({
+          where: {
+            type: TransactionType.CASH_IN,
+            category: TransactionCategory.INVOICE_PAYMENT,
+            amount,
+            OR: [
+              { description: { contains: invoice.invoiceNumber } },
+              { referenceNo: { contains: invoice.invoiceNumber } },
+            ],
+          },
+          orderBy: { transactedAt: "desc" },
+        });
+
+        treasuryTransaction =
+          candidates.find(
+            (transaction) =>
+              containsExactReference(
+                transaction.description,
+                invoice.invoiceNumber
+              ) ||
+              containsExactReference(
+                transaction.referenceNo,
+                invoice.invoiceNumber
+              )
+          ) ?? null;
+      }
+
+      if (treasuryTransaction) {
+        await tx.transaction.delete({ where: { id: treasuryTransaction.id } });
+      }
+
+      // 4. Reverse the stored target progress awarded by this payment, then
+      // remove the rep-target rows linked to it (legacy debt).
+      if (invoice.salesRepId && payment.paymentItems.length > 0) {
+        await reverseStoredRepTargetProgress(
+          tx,
+          invoice.salesRepId,
+          payment.paidAt,
+          collectPaymentItemQuantities(payment.paymentItems)
+        );
+      }
+
+      if (payment.targetItems.length > 0) {
+        const byRep = new Map<string, Map<string, number>>();
+        for (const targetItem of payment.targetItems) {
+          const quantities = byRep.get(targetItem.salesRepId) ?? new Map();
+          quantities.set(
+            targetItem.productId,
+            (quantities.get(targetItem.productId) ?? 0) +
+              Number(targetItem.quantity)
+          );
+          byRep.set(targetItem.salesRepId, quantities);
+        }
+
+        for (const [repId, quantities] of Array.from(byRep.entries())) {
+          await reverseStoredRepTargetProgress(
+            tx,
+            repId,
+            payment.paidAt,
+            quantities
+          );
+        }
+      }
+
+      await tx.paymentTargetItem.deleteMany({
+        where: { paymentId: payment.id },
+      });
+
+      // 5. Remove the payment itself. PaymentItem rows cascade.
+      await tx.payment.delete({ where: { id: payment.id } });
+
+      return {
+        invoiceId: invoice.id,
+        pharmacyId: invoice.pharmacyId,
+        salesRepId: invoice.salesRepId,
+      };
+    });
+
+    revalidateInvoiceRelatedPaths({
+      invoiceId: result.invoiceId,
+      pharmacyId: result.pharmacyId,
+      salesRepIds: [result.salesRepId],
+    });
+
+    return {
+      success: true,
+      data: undefined,
+      message: "تم حذف الدفعة وعكس أثرها بنجاح",
+    };
+  } catch (e: unknown) {
+    return { success: false, error: handleActionError(e) };
+  }
+}
+
+/**
+ * Fully deletes an invoice and reverses every side effect.
+ *
+ * Returns are intentionally blocked: their stock/debt/cash impacts are
+ * separate documents and must be deleted first, which keeps the reversal math
+ * exact. Without returns, the invoice's current contribution to
+ * `pharmacy.currentBalance` is exactly `remainingAmount`.
+ */
+export async function deleteInvoice(invoiceId: string): Promise<ActionResult> {
+  try {
+    await requireRole([
+      UserRole.SUPER_ADMIN,
+      UserRole.ADMIN,
+      UserRole.SALES_MANAGER,
+    ]);
+
+    if (!invoiceId || invoiceId.trim() === "") {
+      throw new Error("معرف الفاتورة مطلوب");
+    }
+
+    const result = await prisma.$transaction(async (tx) => {
+      const invoice = await tx.invoice.findUnique({
+        where: { id: invoiceId },
+        include: {
+          items: true,
+          payments: {
+            include: {
+              paymentItems: true,
+              targetItems: true,
+            },
+          },
+          returns: { select: { id: true } },
+          pharmacy: {
+            select: {
+              id: true,
+              name: true,
+              governorateId: true,
+            },
+          },
+        },
+      });
+
+      if (!invoice) {
+        throw new Error("الفاتورة غير موجودة أو تم حذفها مسبقاً");
+      }
+
+      if (invoice.returns.length > 0) {
+        throw new Error(
+          "يرجى حذف المرتجعات المرتبطة بهذه الفاتورة أولاً قبل حذف الفاتورة"
+        );
+      }
+
+      // ── 1. Reverse stock (standard invoices only) ─────────────
+      if (!invoice.isLegacy) {
+        const movementCandidates = await tx.stockMovement.findMany({
+          where: {
+            movementType: "OUTBOUND",
+            source: "PHARMACY",
+            OR: [
+              { notes: { contains: invoice.invoiceNumber } },
+              { referenceNumber: { contains: invoice.invoiceNumber } },
+            ],
+          },
+          select: {
+            id: true,
+            sourceWarehouseId: true,
+            notes: true,
+            referenceNumber: true,
+          },
+        });
+
+        const invoiceMovements = movementCandidates.filter(
+          (movement) =>
+            containsExactReference(movement.notes, invoice.invoiceNumber) ||
+            containsExactReference(
+              movement.referenceNumber,
+              invoice.invoiceNumber
+            ) ||
+            movement.referenceNumber === invoice.invoiceNumber
+        );
+
+        // Prefer the warehouse recorded on the original movement. Fall back to
+        // the client's governorate SUB warehouse, then MAIN, for old invoices
+        // whose movement row is missing.
+        let warehouseId =
+          invoiceMovements.find((movement) => movement.sourceWarehouseId)
+            ?.sourceWarehouseId ?? null;
+
+        if (!warehouseId) {
+          const subWarehouse = await tx.warehouse.findFirst({
+            where: {
+              type: "SUB",
+              governorateId: invoice.pharmacy.governorateId,
+              isActive: true,
+            },
+            select: { id: true },
+          });
+          const mainWarehouse = subWarehouse
+            ? null
+            : await tx.warehouse.findFirst({
+                where: { type: "MAIN" },
+                select: { id: true },
+              });
+          warehouseId = subWarehouse?.id ?? mainWarehouse?.id ?? null;
+        }
+
+        if (!warehouseId) {
+          throw new Error(
+            "لا يوجد مخزن مرتبط بالفاتورة لاسترجاع الكميات إليه. يرجى مراجعة إعدادات المخازن."
+          );
+        }
+
+        // Group by product in case the invoice contains duplicate lines.
+        const quantityByProduct = new Map<string, number>();
+        for (const item of invoice.items) {
+          const quantity =
+            Number(item.quantity) + Number(item.bonusQuantity ?? 0);
+          if (!Number.isFinite(quantity) || quantity <= 0) continue;
+          quantityByProduct.set(
+            item.productId,
+            (quantityByProduct.get(item.productId) ?? 0) + quantity
+          );
+        }
+
+        for (const [productId, quantity] of Array.from(
+          quantityByProduct.entries()
+        )) {
+          await tx.stockItem.upsert({
+            where: {
+              warehouseId_productId: { warehouseId, productId },
+            },
+            create: {
+              warehouseId,
+              productId,
+              quantity,
+            },
+            update: {
+              quantity: { increment: quantity },
+            },
+          });
+        }
+
+        if (invoiceMovements.length > 0) {
+          await tx.stockMovement.deleteMany({
+            where: { id: { in: invoiceMovements.map((movement) => movement.id) } },
+          });
+        }
+      }
+
+      // ── 2. Reverse client debt ───────────────────────────────
+      // No returns exist (guarded above), so the invoice contributes exactly
+      // its remaining amount to the client's current balance.
+      const remainingAmount = roundMoney(Number(invoice.remainingAmount));
+      if (remainingAmount !== 0) {
+        await tx.pharmacy.update({
+          where: { id: invoice.pharmacyId },
+          data: { currentBalance: { decrement: remainingAmount } },
+        });
+      }
+
+      // Reverse this invoice's contribution to the pharmacy monthly target.
+      // Invoice creation only updates an existing target period, so a missing
+      // period means there is nothing to reverse.
+      if (!invoice.isLegacy) {
+        const targetPeriod = await tx.pharmacyTargetPeriod.findFirst({
+          where: {
+            pharmacyId: invoice.pharmacyId,
+            periodYear: invoice.createdAt.getFullYear(),
+            periodMonth: invoice.createdAt.getMonth() + 1,
+          },
+        });
+
+        if (targetPeriod) {
+          await tx.pharmacyTargetPeriod.update({
+            where: { id: targetPeriod.id },
+            data: {
+              achieved: Math.max(
+                0,
+                Number(targetPeriod.achieved) - Number(invoice.total)
+              ),
+            },
+          });
+        }
+      }
+
+      // ── 3. Reverse payments + treasury ───────────────────────
+      await reverseTargetsForInvoicePayments(
+        tx,
+        invoice.salesRepId,
+        invoice.payments
+      );
+
+      const paymentIds = invoice.payments.map((payment) => payment.id);
+
+      const transactionCandidates = await tx.transaction.findMany({
+        where: {
+          OR: [
+            ...(paymentIds.length > 0
+              ? [{ paymentId: { in: paymentIds } }]
+              : []),
+            { description: { contains: invoice.invoiceNumber } },
+            { referenceNo: { contains: invoice.invoiceNumber } },
+          ],
+        },
+      });
+
+      const invoiceTransactions = transactionCandidates.filter(
+        (transaction) =>
+          (transaction.paymentId !== null &&
+            paymentIds.includes(transaction.paymentId)) ||
+          containsExactReference(transaction.description, invoice.invoiceNumber) ||
+          containsExactReference(transaction.referenceNo, invoice.invoiceNumber)
+      );
+
+      if (invoiceTransactions.length > 0) {
+        // Reverse the net cash effect of the rows we are about to delete.
+        let cashToRemove = 0;
+        for (const transaction of invoiceTransactions) {
+          const amount = Number(transaction.amount);
+          if (
+            transaction.type === TransactionType.CASH_IN ||
+            transaction.type === TransactionType.TRANSFER_IN
+          ) {
+            cashToRemove += amount;
+          } else if (
+            transaction.type === TransactionType.CASH_OUT ||
+            transaction.type === TransactionType.TRANSFER_OUT
+          ) {
+            cashToRemove -= amount;
+          }
+        }
+
+        if (cashToRemove !== 0) {
+          const treasury = await tx.treasury.findFirst();
+          if (treasury) {
+            await tx.treasury.update({
+              where: { id: treasury.id },
+              data: {
+                currentBalance: roundMoney(
+                  Number(treasury.currentBalance) - cashToRemove
+                ),
+              },
+            });
+          }
+        }
+
+        await tx.transaction.deleteMany({
+          where: { id: { in: invoiceTransactions.map((transaction) => transaction.id) } },
+        });
+      }
+
+      if (paymentIds.length > 0) {
+        await tx.paymentTargetItem.deleteMany({
+          where: { paymentId: { in: paymentIds } },
+        });
+        await tx.paymentItem.deleteMany({
+          where: { paymentId: { in: paymentIds } },
+        });
+        await tx.payment.deleteMany({ where: { id: { in: paymentIds } } });
+      }
+
+      // ── 4. Clean up dependents and delete the invoice ────────
+      await tx.alert.deleteMany({ where: { invoiceId: invoice.id } });
+      await tx.invoiceItem.deleteMany({ where: { invoiceId: invoice.id } });
+      await tx.invoice.delete({ where: { id: invoice.id } });
+
+      return {
+        invoiceId: invoice.id,
+        invoiceNumber: invoice.invoiceNumber,
+        pharmacyId: invoice.pharmacyId,
+        salesRepId: invoice.salesRepId,
+        paymentCount: invoice.payments.length,
+      };
+    });
+
+    revalidateInvoiceRelatedPaths({
+      invoiceId: result.invoiceId,
+      pharmacyId: result.pharmacyId,
+      salesRepIds: [result.salesRepId],
+    });
+
+    return {
+      success: true,
+      data: undefined,
+      message: `تم حذف الفاتورة ${result.invoiceNumber} وعكس جميع آثارها بنجاح`,
+    };
   } catch (e: unknown) {
     return { success: false, error: handleActionError(e) };
   }
