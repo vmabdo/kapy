@@ -107,7 +107,7 @@ export default async function SalesPerformancePage() {
           </p>
         </div>
         <Link
-          href="/dashboard/sales/reps"
+          href="/dashboard/sales-reps"
           className="flex items-center gap-2 px-4 py-2.5 rounded-xl border border-border text-sm font-medium hover:bg-muted transition-colors"
         >
           <Users className="w-4 h-4" />

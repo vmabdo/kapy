@@ -1,7 +1,7 @@
 import { notFound } from "next/navigation";
 import Link from "next/link";
-import { getInvoiceById, getAllSalesReps } from "@/queries/sales";
-import { getAllProducts } from "@/queries/inventory";
+import { getInvoiceById, getSalesRepOptions } from "@/queries/sales";
+import { getProductOptions } from "@/queries/inventory";
 import { PaymentForm } from "@/components/sales/payment-form";
 import { ReturnForm } from "@/components/sales/return-form";
 import { InvoiceSalesRepEditor } from "@/components/sales/invoice-sales-rep-editor";
@@ -55,9 +55,15 @@ export default async function InvoiceDetailPage({ params }: Props) {
   }
 
   const canManageInvoice = session.user.role !== UserRole.SALES_REP;
+
+  // Only privileged users see payment/return/rep-editor controls. The full
+  // product catalogue is needed solely for legacy invoices (which have no
+  // lines); standard invoices already carry their own item list. This prevents
+  // loading thousands of unrelated products and rep records on every invoice.
+  const needsProductCatalog = canManageInvoice && invoice.isLegacy;
   const [products, salesReps] = await Promise.all([
-    getAllProducts(),
-    getAllSalesReps(),
+    needsProductCatalog ? getProductOptions() : Promise.resolve([]),
+    canManageInvoice ? getSalesRepOptions() : Promise.resolve([]),
   ]);
 
   const allProductOptions = products.map((p) => ({

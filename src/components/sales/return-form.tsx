@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useRef, useState } from "react";
 import { useForm, useFieldArray, useWatch } from "react-hook-form";
 import { zodResolver } from "@hookform/resolvers/zod";
 import { processInvoiceReturn } from "@/actions/returns";
@@ -71,6 +71,7 @@ export function ReturnForm({
   allProducts = [],
 }: Props) {
   const router = useRouter();
+  const submitLockRef = useRef(false);
   const [isOpen, setIsOpen] = useState(false);
   const [serverError, setServerError] = useState<string | null>(null);
 
@@ -127,30 +128,41 @@ export function ReturnForm({
       }
     }
 
-    const result = await processInvoiceReturn({
-      invoiceId: data.invoiceId,
-      reason: data.reason,
-      notes: data.notes,
-      items: (!isLegacy && data.items ? data.items : []),
-      legacyItems: isLegacy && data.legacyItems
-        ? data.legacyItems.map((item) => ({
-            productId: item.productId,
-            quantity: item.quantity,
-            // The discounted (net) price is the official unit price used for
-            // debt deduction and account-statement entries.
-            unitPrice: calculateNetPrice(item.basePrice, item.discountPercent),
-          }))
-        : [],
-    });
+    if (submitLockRef.current) return;
+    submitLockRef.current = true;
 
-    if (result.success) {
-      toast.success("تم تسجيل المرتجع بنجاح");
-      setIsOpen(false);
-      form.reset();
-      router.refresh();
-    } else {
-      toast.error("حدث خطأ", { description: result.error || "حدث خطأ غير متوقع" });
-      setServerError(result.error || "حدث خطأ غير متوقع");
+    try {
+      const result = await processInvoiceReturn({
+        invoiceId: data.invoiceId,
+        reason: data.reason,
+        notes: data.notes,
+        items: (!isLegacy && data.items ? data.items : []),
+        legacyItems: isLegacy && data.legacyItems
+          ? data.legacyItems.map((item) => ({
+              productId: item.productId,
+              quantity: item.quantity,
+              // The discounted (net) price is the official unit price used for
+              // debt deduction and account-statement entries.
+              unitPrice: calculateNetPrice(item.basePrice, item.discountPercent),
+            }))
+          : [],
+      });
+
+      if (result.success) {
+        toast.success("تم تسجيل المرتجع بنجاح");
+        setIsOpen(false);
+        form.reset();
+        router.refresh();
+      } else {
+        toast.error("حدث خطأ", { description: result.error || "حدث خطأ غير متوقع" });
+        setServerError(result.error || "حدث خطأ غير متوقع");
+      }
+    } catch {
+      const message = "تعذر تسجيل المرتجع، يرجى المحاولة مرة أخرى.";
+      toast.error(message);
+      setServerError(message);
+    } finally {
+      submitLockRef.current = false;
     }
   };
 
@@ -200,7 +212,15 @@ export function ReturnForm({
                   </div>
                 )}
 
-                <form onSubmit={form.handleSubmit(onSubmit)} className="space-y-6">
+                <form
+                  onSubmit={form.handleSubmit(onSubmit)}
+                  dir="rtl"
+                  aria-busy={form.formState.isSubmitting}
+                >
+                  <fieldset
+                    disabled={form.formState.isSubmitting}
+                    className="contents space-y-6"
+                  >
                   {/* ─── LEGACY RETURN FORM ──────────────────────────────── */}
                   {isLegacy ? (
                     <div className="space-y-4">
@@ -500,6 +520,7 @@ export function ReturnForm({
                       )}
                     </button>
                   </div>
+                  </fieldset>
                 </form>
               </div>
             </div>

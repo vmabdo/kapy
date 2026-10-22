@@ -137,18 +137,38 @@ const RecordPaymentSchema = z.object({
 });
 
 // Schema for rep monthly product targets
-const SetRepMonthlyTargetSchema = z.object({
-  salesRepId: z.string().min(1),
-  month: z.coerce.number().int().min(1).max(12),
-  year: z.coerce.number().int().min(2020),
-  notes: z.string().optional(),
-  items: z.array(
-    z.object({
-      productId: z.string().min(1),
-      targetQuantity: z.coerce.number().positive("الكمية يجب أن تكون أكبر من 0"),
-    })
-  ).min(1, "أضف منتجاً واحداً على الأقل"),
-});
+const SetRepMonthlyTargetSchema = z
+  .object({
+    /** Existing target being edited. New targets leave this empty. */
+    targetId: z.string().optional(),
+    salesRepId: z.string().min(1),
+    month: z.coerce.number().int().min(1).max(12),
+    year: z.coerce.number().int().min(2020),
+    notes: z.string().optional(),
+    items: z
+      .array(
+        z.object({
+          productId: z.string().min(1),
+          targetQuantity: z.coerce
+            .number()
+            .positive("الكمية يجب أن تكون أكبر من 0"),
+        })
+      )
+      .min(1, "أضف منتجاً واحداً على الأقل"),
+  })
+  .superRefine((data, ctx) => {
+    const productIds = new Set<string>();
+    data.items.forEach((item, index) => {
+      if (productIds.has(item.productId)) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: ["items", index, "productId"],
+          message: "لا يمكن تكرار نفس المنتج في الأهداف",
+        });
+      }
+      productIds.add(item.productId);
+    });
+  });
 
 type ActionResult<T = void> =
   | { success: true; data: T; message?: string }
@@ -331,7 +351,6 @@ function revalidateInvoiceRelatedPaths(options: {
     revalidatePath(`/dashboard/companies/${options.pharmacyId}/statement`);
   }
   revalidatePath("/dashboard/treasury");
-  revalidatePath("/dashboard/reps");
   revalidatePath("/dashboard/sales-reps");
   revalidatePath("/dashboard/reports");
   revalidatePath("/dashboard/reports/daily");
@@ -1769,27 +1788,66 @@ export async function setRepMonthlyTarget(
     const data = SetRepMonthlyTargetSchema.parse(formData);
 
     const result = await prisma.$transaction(async (tx) => {
-      // Upsert the parent target record
-      const existing = await tx.repMonthlyTarget.findUnique({
-        where: {
-          salesRepId_month_year: {
-            salesRepId: data.salesRepId,
-            month: data.month,
-            year: data.year,
-          },
-        },
-      });
+      // Resolve the target explicitly when the edit form sends an id. This
+      // prevents a manipulated month/year from silently writing to another
+      // period, and lets us verify the target still belongs to the same rep.
+      const existing = data.targetId
+        ? await tx.repMonthlyTarget.findUnique({
+            where: { id: data.targetId },
+            include: { items: true },
+          })
+        : await tx.repMonthlyTarget.findUnique({
+            where: {
+              salesRepId_month_year: {
+                salesRepId: data.salesRepId,
+                month: data.month,
+                year: data.year,
+              },
+            },
+            include: { items: true },
+          });
 
-      let target;
+      if (data.targetId) {
+        if (!existing) {
+          throw new Error("الهدف المطلوب غير موجود أو تم حذفه مسبقاً");
+        }
+        if (
+          existing.salesRepId !== data.salesRepId ||
+          existing.month !== data.month ||
+          existing.year !== data.year
+        ) {
+          throw new Error(
+            "لا يمكن تغيير فترة هدف مسجل. يرجى تحديث الفترة الصحيحة أو إنشاء هدف جديد."
+          );
+        }
+      }
+
+      const requestedProductIds = new Set(
+        data.items.map((item) => item.productId)
+      );
+
+      if (
+        existing?.items.some(
+          (item) =>
+            !requestedProductIds.has(item.productId) &&
+            Number(item.achievedQuantity) > 0
+        )
+      ) {
+        throw new Error(
+          "لا يمكن حذف منتج له كمية محققة. يمكنك تعديل الكمية المستهدفة مع الحفاظ على الإنجاز."
+        );
+      }
+
+      let targetId: string;
+
       if (existing) {
-        // Delete old items and re-create
-        await tx.repMonthlyTargetItem.deleteMany({ where: { targetId: existing.id } });
-        target = await tx.repMonthlyTarget.update({
+        const target = await tx.repMonthlyTarget.update({
           where: { id: existing.id },
           data: { notes: data.notes || null },
         });
+        targetId = target.id;
       } else {
-        target = await tx.repMonthlyTarget.create({
+        const target = await tx.repMonthlyTarget.create({
           data: {
             salesRepId: data.salesRepId,
             month: data.month,
@@ -1797,19 +1855,41 @@ export async function setRepMonthlyTarget(
             notes: data.notes || null,
           },
         });
+        targetId = target.id;
       }
 
-      // Create items
-      await tx.repMonthlyTargetItem.createMany({
-        data: data.items.map((item) => ({
-          targetId: target.id,
-          productId: item.productId,
-          targetQuantity: item.targetQuantity,
-          achievedQuantity: 0,
-        })),
+      // Upsert each line and update ONLY targetQuantity. achievedQuantity is
+      // accumulated by payments; it must never be reset when a manager edits
+      // the plan for an existing month.
+      for (const item of data.items) {
+        await tx.repMonthlyTargetItem.upsert({
+          where: {
+            targetId_productId: {
+              targetId,
+              productId: item.productId,
+            },
+          },
+          create: {
+            targetId,
+            productId: item.productId,
+            targetQuantity: item.targetQuantity,
+          },
+          update: {
+            targetQuantity: item.targetQuantity,
+          },
+        });
+      }
+
+      // Only remove lines that the manager deliberately removed and that had
+      // no achievement (guarded above).
+      await tx.repMonthlyTargetItem.deleteMany({
+        where: {
+          targetId,
+          productId: { notIn: Array.from(requestedProductIds) },
+        },
       });
 
-      return target;
+      return { id: targetId };
     });
 
     revalidatePath(`/dashboard/sales-reps/${data.salesRepId}`);

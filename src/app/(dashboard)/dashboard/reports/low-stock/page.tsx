@@ -1,6 +1,6 @@
 import type { Metadata } from "next";
 import Link from "next/link";
-import { prisma } from "@/lib/prisma";
+import { getLowStockItems } from "@/queries/inventory";
 import { getSystemSettings } from "@/queries/settings";
 import { AlertTriangle, ArrowRight, Package, BarChart3 } from "lucide-react";
 import { cn } from "@/lib/utils";
@@ -13,43 +13,19 @@ export default async function LowStockReportPage() {
   const settings = await getSystemSettings();
   const globalThreshold = settings?.lowStockThreshold ?? 10;
 
-  // Find all stock items where quantity <= product.reorderLevel (or global threshold if reorderLevel = 0)
-  const lowStockItems = await prisma.stockItem.findMany({
-    where: {
-      product: { isActive: true },
-    },
-    include: {
-      product: {
-        select: {
-          id: true,
-          name: true,
-          sku: true,
-          unit: true,
-          reorderLevel: true,
-          category: { select: { name: true } },
-        },
-      },
-      warehouse: {
-        select: { id: true, name: true, type: true },
-      },
-    },
-    orderBy: { quantity: "asc" },
-  });
-
-  // Filter: items below their effective threshold
-  const filtered = lowStockItems.filter((item) => {
-    const threshold = item.product.reorderLevel > 0 ? item.product.reorderLevel : globalThreshold;
-    return Number(item.quantity) <= threshold;
+  // The database compares each row with its own reorder level (or the global
+  // fallback) and only returns low-stock rows — never the whole stock table.
+  const filtered = await getLowStockItems({
+    fallbackThreshold: globalThreshold,
   });
 
   // Categorize severity
   const categorized = filtered.map((item) => {
-    const threshold = item.product.reorderLevel > 0 ? item.product.reorderLevel : globalThreshold;
     const qty = Number(item.quantity);
-    const pct = threshold > 0 ? (qty / threshold) * 100 : 0;
+    const pct = item.threshold > 0 ? (qty / item.threshold) * 100 : 0;
     const severity: "critical" | "warning" | "caution" =
       qty === 0 ? "critical" : pct <= 30 ? "warning" : "caution";
-    return { ...item, threshold, pct, severity };
+    return { ...item, pct, severity };
   });
 
   const criticalCount = categorized.filter((i) => i.severity === "critical").length;

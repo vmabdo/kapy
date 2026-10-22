@@ -1,6 +1,9 @@
 import { StockMovementSource, StockMovementType } from "@prisma/client";
 import { prisma } from "@/lib/prisma";
-import { resolveHistoricalCost, resolveMovementItemValue, resolveProductCost } from "@/lib/costing";
+import {
+  FALLBACK_COST_RATE,
+  resolveMovementItemValue,
+} from "@/lib/costing";
 
 /**
  * Small read-only query layer for the inventory-related figures that appear in
@@ -62,91 +65,86 @@ function dateFilter(from?: Date, to?: Date) {
  * moment an admin edits a product cost. We prefer the most recent inbound
  * movement's immutable cost and only fall back to the live product cost when a
  * stock row has no movement history at all (legacy/imported data).
+ *
+ * The joins, DISTINCT ON snapshots and final SUM execute inside PostgreSQL.
+ * Loading every stock row and movement line into Node was the largest memory
+ * risk in the financial dashboard as the movement ledger grew.
  */
 export async function getInventoryValuation(): Promise<number> {
-  const [stockItems, costMovements] = await Promise.all([
-    prisma.stockItem.findMany({
-      where: { quantity: { gt: 0 } },
-      select: {
-        warehouseId: true,
-        productId: true,
-        quantity: true,
-        product: { select: { costPrice: true, sellingPrice: true } },
-      },
-    }),
-    prisma.stockMovementItem.findMany({
-      where: {
-        stockMovement: {
-          targetWarehouseId: { not: null },
-          movementType: {
-            in: [
-              StockMovementType.INBOUND,
-              StockMovementType.OPENING_BALANCE,
-              StockMovementType.ADJUSTMENT_IN,
-              StockMovementType.RETURN_INBOUND,
-            ],
-          },
-        },
-        OR: [
-          { historicalCost: { gt: 0 } },
-          { unitCost: { not: null } },
-        ],
-      },
-      select: {
-        productId: true,
-        historicalCost: true,
-        unitCost: true,
-        stockMovement: {
-          select: {
-            targetWarehouseId: true,
-            movedAt: true,
-          },
-        },
-      },
-    }),
-  ]);
+  const [row] = await prisma.$queryRaw<Array<{ value: unknown }>>`
+    WITH latest_warehouse_cost AS (
+      SELECT DISTINCT ON (sm."targetWarehouseId", smi."productId")
+        sm."targetWarehouseId" AS "warehouseId",
+        smi."productId" AS "productId",
+        CASE
+          WHEN smi."historicalCost" > 0 THEN smi."historicalCost"
+          WHEN smi."unitCost" >= 0 THEN smi."unitCost"
+          ELSE 0
+        END AS "cost"
+      FROM "stock_movement_items" smi
+      INNER JOIN "stock_movements" sm ON sm.id = smi."stockMovementId"
+      WHERE sm."targetWarehouseId" IS NOT NULL
+        AND sm."movementType" IN (
+          'INBOUND',
+          'OPENING_BALANCE',
+          'ADJUSTMENT_IN',
+          'RETURN_INBOUND'
+        )
+        AND (smi."historicalCost" > 0 OR smi."unitCost" IS NOT NULL)
+      ORDER BY
+        sm."targetWarehouseId" ASC,
+        smi."productId" ASC,
+        sm."movedAt" DESC,
+        smi.id DESC
+    ),
+    latest_product_cost AS (
+      SELECT DISTINCT ON (smi."productId")
+        smi."productId" AS "productId",
+        CASE
+          WHEN smi."historicalCost" > 0 THEN smi."historicalCost"
+          WHEN smi."unitCost" >= 0 THEN smi."unitCost"
+          ELSE 0
+        END AS "cost"
+      FROM "stock_movement_items" smi
+      INNER JOIN "stock_movements" sm ON sm.id = smi."stockMovementId"
+      WHERE sm."targetWarehouseId" IS NOT NULL
+        AND sm."movementType" IN (
+          'INBOUND',
+          'OPENING_BALANCE',
+          'ADJUSTMENT_IN',
+          'RETURN_INBOUND'
+        )
+        AND (smi."historicalCost" > 0 OR smi."unitCost" IS NOT NULL)
+      ORDER BY
+        smi."productId" ASC,
+        sm."movedAt" DESC,
+        smi.id DESC
+    )
+    SELECT
+      COALESCE(
+        SUM(
+          si.quantity * COALESCE(
+            lwc."cost",
+            lpc."cost",
+            p."costPrice",
+            p."sellingPrice" * ${FALLBACK_COST_RATE}::numeric,
+            0
+          )
+        ),
+        0
+      )::float8 AS "value"
+    FROM "stock_items" si
+    INNER JOIN "products" p ON p.id = si."productId"
+    LEFT JOIN latest_warehouse_cost lwc
+      ON lwc."warehouseId" = si."warehouseId"
+     AND lwc."productId" = si."productId"
+    LEFT JOIN latest_product_cost lpc
+      ON lpc."productId" = si."productId"
+    WHERE si.quantity > 0
+  `;
 
-  const latestWarehouseCost = new Map<
-    string,
-    { cost: number; movedAt: number }
-  >();
-  const latestProductCost = new Map<
-    string,
-    { cost: number; movedAt: number }
-  >();
-
-  for (const movementItem of costMovements) {
-    const warehouseId = movementItem.stockMovement.targetWarehouseId;
-    if (!warehouseId) continue;
-
-    const movedAt = movementItem.stockMovement.movedAt.getTime();
-    const cost = resolveHistoricalCost(movementItem);
-    const warehouseKey = `${warehouseId}:${movementItem.productId}`;
-
-    const currentWarehouseCost = latestWarehouseCost.get(warehouseKey);
-    if (!currentWarehouseCost || movedAt > currentWarehouseCost.movedAt) {
-      latestWarehouseCost.set(warehouseKey, { cost, movedAt });
-    }
-
-    const currentProductCost = latestProductCost.get(movementItem.productId);
-    if (!currentProductCost || movedAt > currentProductCost.movedAt) {
-      latestProductCost.set(movementItem.productId, { cost, movedAt });
-    }
-  }
-
-  return stockItems.reduce((sum, item) => {
-    const warehouseSnapshot = latestWarehouseCost.get(
-      `${item.warehouseId}:${item.productId}`
-    );
-    // A warehouse-level snapshot is preferred; a product-level snapshot is a
-    // safe fallback for imported stock rows. Live cost is the last resort.
-    const unitCost =
-      warehouseSnapshot?.cost ??
-      latestProductCost.get(item.productId)?.cost ??
-      resolveProductCost(item.product);
-
-    return sum + Number(item.quantity) * unitCost;
-  }, 0);
+  const value = Number(row?.value ?? 0);
+  return Number.isFinite(value) ? value : 0;
 }
 
 /** All-time value of warehouse opening balances (opening inventory capital). */

@@ -114,7 +114,7 @@ export async function createSalesRep(
       });
     });
 
-    revalidatePath("/dashboard/sales/reps");
+    revalidatePath("/dashboard/sales-reps");
     return { success: true, data: { id: rep.id }, message: "تم إضافة المندوب بنجاح" };
   } catch (e: unknown) {
     return { success: false, error: handleActionError(e) };
@@ -141,8 +141,8 @@ export async function updateSalesRep(
       },
     });
 
-    revalidatePath("/dashboard/sales/reps");
-    revalidatePath(`/dashboard/sales/reps/${repId}`);
+    revalidatePath("/dashboard/sales-reps");
+    revalidatePath(`/dashboard/sales-reps/${repId}`);
     return { success: true, data: undefined, message: "تم تحديث بيانات المندوب بنجاح" };
   } catch (e: unknown) {
     return { success: false, error: handleActionError(e) };
@@ -168,8 +168,8 @@ export async function addRepBonus(
       },
     });
 
-    revalidatePath(`/dashboard/sales/reps/${data.salesRepId}`);
-    revalidatePath("/dashboard/sales/reps");
+    revalidatePath(`/dashboard/sales-reps/${data.salesRepId}`);
+    revalidatePath("/dashboard/sales-reps");
     return { success: true, data: undefined, message: "تم إضافة المكافأة بنجاح" };
   } catch (e: unknown) {
     return { success: false, error: handleActionError(e) };
@@ -195,8 +195,8 @@ export async function addRepDeduction(
       },
     });
 
-    revalidatePath(`/dashboard/sales/reps/${data.salesRepId}`);
-    revalidatePath("/dashboard/sales/reps");
+    revalidatePath(`/dashboard/sales-reps/${data.salesRepId}`);
+    revalidatePath("/dashboard/sales-reps");
     return { success: true, data: undefined, message: "تم تسجيل الخصم بنجاح" };
   } catch (e: unknown) {
     return { success: false, error: handleActionError(e) };

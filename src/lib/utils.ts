@@ -8,12 +8,19 @@ export function cn(...inputs: ClassValue[]) {
   return twMerge(clsx(inputs));
 }
 
+/** Convert unknown numeric input to a finite number, defaulting to 0. */
+function toFiniteNumber(value: unknown): number {
+  if (value === null || value === undefined || value === "") return 0;
+  const num = typeof value === "number" ? value : Number(value);
+  return Number.isFinite(num) ? num : 0;
+}
+
 /** Format a number as Egyptian Pound currency. */
 export function formatCurrency(
-  amount: number | string,
+  amount: number | string | null | undefined,
   opts?: Intl.NumberFormatOptions
 ): string {
-  const num = typeof amount === "string" ? parseFloat(amount) : amount;
+  const num = toFiniteNumber(amount);
   return new Intl.NumberFormat("ar-EG", {
     style: "currency",
     currency: "EGP",
@@ -25,22 +32,22 @@ export function formatCurrency(
 
 /** Format a number with locale formatting. */
 export function formatNumber(
-  value: number | string,
+  value: number | string | null | undefined,
   locale = "ar-EG",
   opts?: Intl.NumberFormatOptions
 ): string {
-  const num = typeof value === "string" ? parseFloat(value) : value;
-  if (isNaN(num)) return "0";
-  return new Intl.NumberFormat(locale, opts).format(num);
+  return new Intl.NumberFormat(locale, opts).format(toFiniteNumber(value));
 }
 
 /** Format a date to a readable Arabic locale string. */
 export function formatDate(
-  date: Date | string,
+  date: Date | string | null | undefined,
   locale = "ar-EG",
   opts?: Intl.DateTimeFormatOptions
 ): string {
+  if (date === null || date === undefined) return "—";
   const d = typeof date === "string" ? new Date(date) : date;
+  if (!(d instanceof Date) || Number.isNaN(d.getTime())) return "—";
   return new Intl.DateTimeFormat(locale, {
     year: "numeric",
     month: "long",
@@ -51,8 +58,12 @@ export function formatDate(
 }
 
 /** Format a date to a short numeric format (DD/MM/YYYY). */
-export function formatShortDate(date: Date | string): string {
+export function formatShortDate(
+  date: Date | string | null | undefined
+): string {
+  if (date === null || date === undefined) return "—";
   const d = typeof date === "string" ? new Date(date) : date;
+  if (!(d instanceof Date) || Number.isNaN(d.getTime())) return "—";
   return new Intl.DateTimeFormat("en-GB", {
     day: "2-digit",
     month: "2-digit",
@@ -74,10 +85,9 @@ export function daysFromNow(date: Date | string): number {
   return Math.ceil(diff / (1000 * 60 * 60 * 24));
 }
 
-/** Convert a Decimal (Prisma) to a JS number safely. */
+/** Convert a Decimal (Prisma) or unknown value to a finite JS number safely. */
 export function toNumber(value: unknown): number {
-  if (value === null || value === undefined) return 0;
-  return parseFloat(String(value));
+  return toFiniteNumber(value);
 }
 
 /** Generate a sequential invoice number. */
@@ -100,14 +110,16 @@ export function calculateDiscountAmount(
   discountType: DiscountType | string,
   discountValue: number
 ): number {
-  if (!discountValue || discountValue <= 0) return 0;
+  const safeSubtotal = toFiniteNumber(subtotal);
+  const safeDiscount = toFiniteNumber(discountValue);
+  if (safeDiscount <= 0) return 0;
   if (discountType === DiscountType.PERCENTAGE) {
-    return (subtotal * discountValue) / 100;
+    return (safeSubtotal * safeDiscount) / 100;
   }
-  return Number(discountValue);
+  return safeDiscount;
 }
 
 /** Calculate net total after discount */
 export function calculateNetTotal(subtotal: number, discountAmount: number): number {
-  return Math.max(0, subtotal - discountAmount);
+  return Math.max(0, toFiniteNumber(subtotal) - toFiniteNumber(discountAmount));
 }

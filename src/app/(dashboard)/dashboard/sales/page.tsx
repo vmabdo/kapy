@@ -1,6 +1,6 @@
 import type { Metadata } from "next";
 import Link from "next/link";
-import { getInvoices, getSalesStats, getAllSalesReps } from "@/queries/sales";
+import { getInvoices, getSalesStats, getSalesRepOptions } from "@/queries/sales";
 import { prisma } from "@/lib/prisma";
 import {
   getZonedDayRange,
@@ -70,7 +70,7 @@ export default async function SalesPage({ searchParams }: PageProps) {
   const [invoices, stats, salesReps, clients] = await Promise.all([
     getInvoices(filters),
     getSalesStats(forcedSalesRepId),
-    getAllSalesReps(),
+    getSalesRepOptions(),
     prisma.pharmacy.findMany({
       where: { isActive: true },
       orderBy: { name: "asc" },

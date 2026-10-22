@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useTransition, useEffect, useMemo } from "react";
+import { useState, useTransition, useEffect, useMemo, useRef } from "react";
 import { useRouter } from "next/navigation";
 import {
   useForm,
@@ -152,6 +152,9 @@ export function InvoiceForm({
 }: Props) {
   const router = useRouter();
   const [isPending, startTransition] = useTransition();
+  const [isSubmitting, setIsSubmitting] = useState(false);
+  const submitLockRef = useRef(false);
+  const isBusy = isPending || isSubmitting;
   const [serverError, setServerError] = useState<string | null>(null);
   const [clientFilter, setClientFilter] = useState<ClientTypeFilter>("ALL");
 
@@ -325,48 +328,63 @@ export function InvoiceForm({
   );
 
   const onSubmit = (data: FormData) => {
+    // A ref guard closes the tiny window before React re-renders the disabled
+    // fieldset, so rapid double-clicks cannot create duplicate invoices.
+    if (submitLockRef.current || isBusy) return;
+    submitLockRef.current = true;
+    setIsSubmitting(true);
+
     if (data.isLegacy) {
       data.items = []; // Clear any hidden empty rows
     }
     setServerError(null);
     startTransition(async () => {
-      const result = await createInvoice({
-        ...data,
-        salesRepId: data.isLegacy ? null : (data.salesRepId || null),
-        discountType: data.discountType ?? DiscountType.PERCENTAGE,
-        discountValue: data.discountValue ?? 0,
-        paidAmount: data.paidAmount ?? 0,
-        isLegacy: data.isLegacy ?? false,
-        legacyDebtAmount: data.isLegacy ? (Number(data.legacyDebtAmount) || 0) : 0,
-        issueDate: data.isLegacy && data.issueDate ? new Date(data.issueDate) : undefined,
-        // upfrontPaymentItems carry discountedUnitPrice as unitPrice
-        upfrontPaymentItems: data.isLegacy
-          ? []
-          : (data.upfrontPaymentItems ?? []).filter(
-              (pi) => (pi.paidQuantity ?? 0) > 0
-            ).map((pi) => ({
-              ...pi,
-              paidQuantity: pi.paidQuantity ?? 0,
-              unitPrice: pi.unitPrice ?? 0, // discountedUnitPrice
-            })),
-        // LEGACY invoices have no items
-        items: data.isLegacy
-          ? []
-          : (data.items ?? []).map((item) => ({
-              productId: (item.productId || "") as string,
-              quantity: (item.quantity || 1) as number,
-              unitPrice: item.unitPrice ?? 0,
-              bonusQuantity: item.bonusQuantity ?? 0,
-            })),
-      });
-      if (result.success) {
-        toast.success("تم إصدار الفاتورة بنجاح");
-        router.push(`/dashboard/sales/${result.data.id}`);
-        router.refresh();
-      } else {
-        toast.error("حدث خطأ", { description: result.error });
-        setServerError(result.error);
-        window.scrollTo({ top: 0, behavior: "smooth" });
+      try {
+        const result = await createInvoice({
+          ...data,
+          salesRepId: data.isLegacy ? null : (data.salesRepId || null),
+          discountType: data.discountType ?? DiscountType.PERCENTAGE,
+          discountValue: data.discountValue ?? 0,
+          paidAmount: data.paidAmount ?? 0,
+          isLegacy: data.isLegacy ?? false,
+          legacyDebtAmount: data.isLegacy ? (Number(data.legacyDebtAmount) || 0) : 0,
+          issueDate: data.isLegacy && data.issueDate ? new Date(data.issueDate) : undefined,
+          // upfrontPaymentItems carry discountedUnitPrice as unitPrice
+          upfrontPaymentItems: data.isLegacy
+            ? []
+            : (data.upfrontPaymentItems ?? []).filter(
+                (pi) => (pi.paidQuantity ?? 0) > 0
+              ).map((pi) => ({
+                ...pi,
+                paidQuantity: pi.paidQuantity ?? 0,
+                unitPrice: pi.unitPrice ?? 0, // discountedUnitPrice
+              })),
+          // LEGACY invoices have no items
+          items: data.isLegacy
+            ? []
+            : (data.items ?? []).map((item) => ({
+                productId: (item.productId || "") as string,
+                quantity: (item.quantity || 1) as number,
+                unitPrice: item.unitPrice ?? 0,
+                bonusQuantity: item.bonusQuantity ?? 0,
+              })),
+        });
+        if (result.success) {
+          toast.success("تم إصدار الفاتورة بنجاح");
+          router.push(`/dashboard/sales/${result.data.id}`);
+          router.refresh();
+        } else {
+          toast.error("حدث خطأ", { description: result.error });
+          setServerError(result.error);
+          window.scrollTo({ top: 0, behavior: "smooth" });
+        }
+      } catch {
+        const message = "تعذر إصدار الفاتورة، يرجى المحاولة مرة أخرى.";
+        toast.error(message);
+        setServerError(message);
+      } finally {
+        submitLockRef.current = false;
+        setIsSubmitting(false);
       }
     });
   };
@@ -397,8 +415,12 @@ export function InvoiceForm({
     "w-full px-3 py-2.5 rounded-xl border border-border bg-background text-sm focus:outline-none focus:ring-2 focus:ring-primary/30";
 
   return (
-    <form onSubmit={handleSubmit(onSubmit, onError)} className="space-y-6" dir="rtl">
-
+    <form
+      onSubmit={handleSubmit(onSubmit, onError)}
+      dir="rtl"
+      aria-busy={isBusy}
+    >
+      <fieldset disabled={isBusy} className="contents space-y-6">
       {/* ─── Section 1: Invoice Header ─────────────────────────── */}
       <div className="bg-card border border-border rounded-xl p-5">
         <h2 className="font-semibold text-sm mb-4 flex items-center justify-between gap-2">
@@ -1080,7 +1102,7 @@ export function InvoiceForm({
         </button>
         <button
           type="submit"
-          disabled={isPending}
+          disabled={isBusy}
           className={cn(
             "flex items-center gap-2 px-6 py-2.5 rounded-xl text-sm font-semibold disabled:opacity-60 transition-colors",
             isLegacy
@@ -1088,14 +1110,19 @@ export function InvoiceForm({
               : "bg-primary text-primary-foreground hover:bg-primary/90"
           )}
         >
-          {isPending ? (
+          {isBusy ? (
             <Loader2 className="w-4 h-4 animate-spin" />
           ) : (
             <FileText className="w-4 h-4" />
           )}
-          {isLegacy ? "تسجيل المديونية السابقة" : "إصدار الفاتورة"}
+          {isBusy
+            ? "جاري إصدار الفاتورة..."
+            : isLegacy
+              ? "تسجيل المديونية السابقة"
+              : "إصدار الفاتورة"}
         </button>
       </div>
+      </fieldset>
     </form>
   );
 }

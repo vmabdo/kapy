@@ -65,7 +65,6 @@ function revalidateReturnRelatedPaths(options: {
     revalidatePath(`/dashboard/companies/${options.pharmacyId}/statement`);
   }
   revalidatePath("/dashboard/treasury");
-  revalidatePath("/dashboard/reps");
   revalidatePath("/dashboard/sales-reps");
   revalidatePath("/dashboard/reports");
   revalidatePath("/dashboard/reports/daily");

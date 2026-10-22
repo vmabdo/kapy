@@ -41,6 +41,7 @@ const MONTHS = [
 ];
 
 const Schema = z.object({
+  targetId: z.string().optional(),
   salesRepId: z.string(),
   month: z.coerce.number().int().min(1).max(12),
   year: z.coerce.number().int().min(2020),
@@ -71,6 +72,7 @@ export function RepMonthlyTargetForm({ salesRepId, products, existingTarget }: P
   } = useForm<FormData>({
     resolver: zodResolver(Schema),
     defaultValues: {
+      targetId: existingTarget?.id,
       salesRepId,
       month: existingTarget?.month ?? currentPeriod.month,
       year: existingTarget?.year ?? currentPeriod.year,
@@ -105,31 +107,64 @@ export function RepMonthlyTargetForm({ salesRepId, products, existingTarget }: P
 
   return (
     <form onSubmit={handleSubmit(onSubmit)} className="space-y-5" dir="rtl">
+      <input type="hidden" {...register("targetId")} />
       <input type="hidden" {...register("salesRepId")} />
 
-      {/* Period Selection */}
+      {/* Period Selection — locked while editing an existing target so a
+          historical record can never be overwritten through a period change. */}
       <div className="grid grid-cols-2 gap-4">
         <div className="space-y-1.5">
           <label className="text-sm font-medium">الشهر</label>
-          <select {...register("month")} className={inputClass}>
-            {MONTHS.map((m, i) => (
-              <option key={i + 1} value={i + 1}>{m}</option>
-            ))}
-          </select>
+          {existingTarget ? (
+            <>
+              <select
+                value={existingTarget.month}
+                disabled
+                className={cn(inputClass, "opacity-60 cursor-not-allowed")}
+              >
+                {MONTHS.map((m, i) => (
+                  <option key={i + 1} value={i + 1}>{m}</option>
+                ))}
+              </select>
+              <input type="hidden" {...register("month")} />
+            </>
+          ) : (
+            <select {...register("month")} className={inputClass}>
+              {MONTHS.map((m, i) => (
+                <option key={i + 1} value={i + 1}>{m}</option>
+              ))}
+            </select>
+          )}
         </div>
         <div className="space-y-1.5">
           <label className="text-sm font-medium">السنة</label>
-          <select {...register("year")} className={inputClass}>
-            {[2024, 2025, 2026, 2027].map((y) => (
-              <option key={y} value={y}>{y}</option>
-            ))}
-          </select>
+          {existingTarget ? (
+            <>
+              <select
+                value={existingTarget.year}
+                disabled
+                className={cn(inputClass, "opacity-60 cursor-not-allowed")}
+              >
+                {[2024, 2025, 2026, 2027].map((y) => (
+                  <option key={y} value={y}>{y}</option>
+                ))}
+              </select>
+              <input type="hidden" {...register("year")} />
+            </>
+          ) : (
+            <select {...register("year")} className={inputClass}>
+              {[2024, 2025, 2026, 2027].map((y) => (
+                <option key={y} value={y}>{y}</option>
+              ))}
+            </select>
+          )}
         </div>
       </div>
 
       {existingTarget && (
         <div className="p-3 rounded-xl bg-amber-50 dark:bg-amber-900/10 border border-amber-200 dark:border-amber-800/40 text-xs text-amber-700 dark:text-amber-400">
-          ⚠️ يوجد هدف مسجل لهذه الفترة. حفظ بيانات جديدة سيستبدل الأهداف السابقة.
+          يوجد هدف مسجل لهذه الفترة. سيتم تحديث الكميات المستهدفة مع الحفاظ على
+          الكميات المحققة، ولا يمكن تغيير فترة الهدف من هذه الشاشة.
         </div>
       )}
 
@@ -165,7 +200,12 @@ export function RepMonthlyTargetForm({ salesRepId, products, existingTarget }: P
                 <div className="col-span-7">
                   <select
                     {...register(`items.${index}.productId`)}
-                    className={cn(inputClass, "text-sm")}
+                    disabled={achieved > 0}
+                    className={cn(
+                      inputClass,
+                      "text-sm",
+                      achieved > 0 && "opacity-60 cursor-not-allowed"
+                    )}
                   >
                     <option value="">اختر منتجاً...</option>
                     {products.map((p) => (
@@ -194,7 +234,7 @@ export function RepMonthlyTargetForm({ salesRepId, products, existingTarget }: P
 
                 {/* Remove Button */}
                 <div className="col-span-2 flex justify-center">
-                  {fields.length > 1 && (
+                  {fields.length > 1 && achieved <= 0 && (
                     <button
                       type="button"
                       onClick={() => remove(index)}

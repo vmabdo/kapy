@@ -119,6 +119,15 @@ export async function getAllSalesReps() {
   }));
 }
 
+/** Minimal rep list for selectors; avoids loading counts and user records. */
+export async function getSalesRepOptions() {
+  return prisma.salesRep.findMany({
+    where: { isActive: true },
+    select: { id: true, name: true, employeeCode: true },
+    orderBy: { name: "asc" },
+  });
+}
+
 export async function getSalesRepById(id: string) {
   const rep = await prisma.salesRep.findUnique({
     where: { id },

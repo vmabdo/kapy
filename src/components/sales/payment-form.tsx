@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState, useTransition } from "react";
+import { useEffect, useRef, useState, useTransition } from "react";
 import { useRouter } from "next/navigation";
 import { useForm } from "react-hook-form";
 import { zodResolver } from "@hookform/resolvers/zod";
@@ -121,6 +121,9 @@ export function PaymentForm({
 }: Props) {
   const router = useRouter();
   const [isPending, startTransition] = useTransition();
+  const [isSubmitting, setIsSubmitting] = useState(false);
+  const submitLockRef = useRef(false);
+  const isBusy = isPending || isSubmitting;
   const [serverError, setServerError] = useState<string | null>(null);
   const [mode, setMode] = useState<PaymentMode>("FLAT");
   const [successMsg, setSuccessMsg] = useState<string | null>(null);
@@ -200,7 +203,7 @@ export function PaymentForm({
   if (remainingAmount <= 0) return null;
 
   const handleFlatSubmit = (data: z.infer<typeof FlatPaymentSchema>) => {
-    if (isOverFlat) return;
+    if (submitLockRef.current || isBusy || isOverFlat) return;
     if (isLegacy && includeTargetItems) {
       const activeTargets = targetItems.filter((ti) => ti.productId && Number(ti.quantity) > 0);
       if (activeTargets.length > 0 && !targetSalesRepId) {
@@ -210,42 +213,51 @@ export function PaymentForm({
     }
     setServerError(null);
     setSuccessMsg(null);
+    submitLockRef.current = true;
+    setIsSubmitting(true);
     startTransition(async () => {
-      const activeTargets =
-        isLegacy && includeTargetItems
-          ? targetItems
-              .filter((ti) => ti.productId && Number(ti.quantity) > 0)
-              .map((ti) => ({
-                productId: ti.productId,
-                quantity: Number(ti.quantity),
-                price: Number(ti.netPrice) || 0,
-              }))
-          : undefined;
+      try {
+        const activeTargets =
+          isLegacy && includeTargetItems
+            ? targetItems
+                .filter((ti) => ti.productId && Number(ti.quantity) > 0)
+                .map((ti) => ({
+                  productId: ti.productId,
+                  quantity: Number(ti.quantity),
+                  price: Number(ti.netPrice) || 0,
+                }))
+            : undefined;
 
-      const result = await recordInvoicePayment({
-        invoiceId: data.invoiceId,
-        amount: data.amount,
-        method: data.method,
-        referenceNo: data.referenceNo,
-        notes: data.notes,
-        targetSalesRepId: isLegacy && includeTargetItems ? targetSalesRepId : undefined,
-        targetItems: activeTargets && activeTargets.length > 0 ? activeTargets : undefined,
-      });
-      if (result.success) {
-        setSuccessMsg(result.message ?? "تم تسجيل الدفعة بنجاح");
-        flatForm.reset({ invoiceId, amount: 0, method: "CASH" });
-        setTargetItems([]);
-        setTargetSalesRepId("");
-        setIncludeTargetItems(false);
-        router.refresh();
-      } else {
-        setServerError(result.error);
+        const result = await recordInvoicePayment({
+          invoiceId: data.invoiceId,
+          amount: data.amount,
+          method: data.method,
+          referenceNo: data.referenceNo,
+          notes: data.notes,
+          targetSalesRepId: isLegacy && includeTargetItems ? targetSalesRepId : undefined,
+          targetItems: activeTargets && activeTargets.length > 0 ? activeTargets : undefined,
+        });
+        if (result.success) {
+          setSuccessMsg(result.message ?? "تم تسجيل الدفعة بنجاح");
+          flatForm.reset({ invoiceId, amount: 0, method: "CASH" });
+          setTargetItems([]);
+          setTargetSalesRepId("");
+          setIncludeTargetItems(false);
+          router.refresh();
+        } else {
+          setServerError(result.error);
+        }
+      } catch {
+        setServerError("تعذر تسجيل الدفعة، يرجى المحاولة مرة أخرى.");
+      } finally {
+        submitLockRef.current = false;
+        setIsSubmitting(false);
       }
     });
   };
 
   const handleItemizedSubmit = (data: z.infer<typeof ItemizedPaymentSchema>) => {
-    if (isOverItemized) return;
+    if (submitLockRef.current || isBusy || isOverItemized) return;
     const activeItems = data.paymentItems.filter((pi) => pi.paidQuantity > 0);
     if (activeItems.length === 0) {
       setServerError("حدد كمية لمنتج واحد على الأقل");
@@ -253,26 +265,35 @@ export function PaymentForm({
     }
     setServerError(null);
     setSuccessMsg(null);
+    submitLockRef.current = true;
+    setIsSubmitting(true);
     startTransition(async () => {
-      const result = await recordInvoicePayment({
-        invoiceId: data.invoiceId,
-        amount: itemizedTotal,
-        method: data.method,
-        referenceNo: data.referenceNo,
-        notes: data.notes,
-        paymentItems: activeItems.map((pi) => ({
-          invoiceItemId: pi.invoiceItemId,
-          productId: pi.productId,
-          paidQuantity: pi.paidQuantity,
-          unitPrice: pi.unitPrice,
-        })),
-      });
-      if (result.success) {
-        setSuccessMsg(result.message ?? "تم تسجيل الدفعة بنجاح");
-        itemizedForm.reset();
-        router.refresh();
-      } else {
-        setServerError(result.error);
+      try {
+        const result = await recordInvoicePayment({
+          invoiceId: data.invoiceId,
+          amount: itemizedTotal,
+          method: data.method,
+          referenceNo: data.referenceNo,
+          notes: data.notes,
+          paymentItems: activeItems.map((pi) => ({
+            invoiceItemId: pi.invoiceItemId,
+            productId: pi.productId,
+            paidQuantity: pi.paidQuantity,
+            unitPrice: pi.unitPrice,
+          })),
+        });
+        if (result.success) {
+          setSuccessMsg(result.message ?? "تم تسجيل الدفعة بنجاح");
+          itemizedForm.reset();
+          router.refresh();
+        } else {
+          setServerError(result.error);
+        }
+      } catch {
+        setServerError("تعذر تسجيل الدفعة، يرجى المحاولة مرة أخرى.");
+      } finally {
+        submitLockRef.current = false;
+        setIsSubmitting(false);
       }
     });
   };
@@ -304,11 +325,13 @@ export function PaymentForm({
           <button
             type="button"
             onClick={() => setMode("FLAT")}
+            disabled={isBusy}
             className={cn(
               "flex items-center justify-center gap-2 p-3 rounded-xl border text-sm font-medium transition-all",
               mode === "FLAT"
                 ? "border-primary bg-primary/10 text-primary"
-                : "border-border text-muted-foreground hover:bg-muted"
+                : "border-border text-muted-foreground hover:bg-muted",
+              isBusy && "opacity-50 cursor-not-allowed"
             )}
           >
             <DollarSign className="w-4 h-4" />
@@ -317,13 +340,13 @@ export function PaymentForm({
           <button
             type="button"
             onClick={() => setMode("ITEMIZED")}
-            disabled={invoiceItems.length === 0}
+            disabled={invoiceItems.length === 0 || isBusy}
             className={cn(
               "flex items-center justify-center gap-2 p-3 rounded-xl border text-sm font-medium transition-all",
               mode === "ITEMIZED"
                 ? "border-primary bg-primary/10 text-primary"
                 : "border-border text-muted-foreground hover:bg-muted",
-              invoiceItems.length === 0 && "opacity-40 cursor-not-allowed"
+              (invoiceItems.length === 0 || isBusy) && "opacity-40 cursor-not-allowed"
             )}
           >
             <Package className="w-4 h-4" />
@@ -342,7 +365,12 @@ export function PaymentForm({
 
       {/* ─── FLAT MODE ───────────────────────────────────────── */}
       {mode === "FLAT" && (
-        <form onSubmit={flatForm.handleSubmit(handleFlatSubmit)} className="space-y-4" dir="rtl">
+        <form
+          onSubmit={flatForm.handleSubmit(handleFlatSubmit)}
+          dir="rtl"
+          aria-busy={isBusy}
+        >
+          <fieldset disabled={isBusy} className="contents space-y-4">
           {/* Amount */}
           <div className="space-y-1.5">
             <label className="text-sm font-medium">المبلغ (ج.م)</label>
@@ -630,18 +658,24 @@ export function PaymentForm({
 
           <button
             type="submit"
-            disabled={isPending || isOverFlat}
+            disabled={isBusy || isOverFlat}
             className="w-full flex justify-center items-center gap-2 px-4 py-2.5 rounded-xl bg-green-600 text-white text-sm font-medium hover:bg-green-700 disabled:opacity-60 transition-colors"
           >
-            {isPending ? <Loader2 className="w-4 h-4 animate-spin" /> : <Banknote className="w-4 h-4" />}
-            تأكيد السداد
+            {isBusy ? <Loader2 className="w-4 h-4 animate-spin" /> : <Banknote className="w-4 h-4" />}
+            {isBusy ? "جاري تسجيل الدفعة..." : "تأكيد السداد"}
           </button>
+          </fieldset>
         </form>
       )}
 
       {/* ─── ITEMIZED MODE ────────────────────────────────────── */}
       {mode === "ITEMIZED" && (
-        <form onSubmit={itemizedForm.handleSubmit(handleItemizedSubmit)} className="space-y-4" dir="rtl">
+        <form
+          onSubmit={itemizedForm.handleSubmit(handleItemizedSubmit)}
+          dir="rtl"
+          aria-busy={isBusy}
+        >
+          <fieldset disabled={isBusy} className="contents space-y-4">
           {/* Product lines */}
           <div className="space-y-2">
             <p className="text-xs text-muted-foreground font-medium">
@@ -758,12 +792,15 @@ export function PaymentForm({
 
           <button
             type="submit"
-            disabled={isPending || isOverItemized || itemizedTotal <= 0}
+            disabled={isBusy || isOverItemized || itemizedTotal <= 0}
             className="w-full flex justify-center items-center gap-2 px-4 py-2.5 rounded-xl bg-green-600 text-white text-sm font-medium hover:bg-green-700 disabled:opacity-60 transition-colors"
           >
-            {isPending ? <Loader2 className="w-4 h-4 animate-spin" /> : <Package className="w-4 h-4" />}
-            تأكيد سداد الكميات ({formatCurrency(itemizedTotal.toString())})
+            {isBusy ? <Loader2 className="w-4 h-4 animate-spin" /> : <Package className="w-4 h-4" />}
+            {isBusy
+              ? "جاري تسجيل الدفعة..."
+              : `تأكيد سداد الكميات (${formatCurrency(itemizedTotal.toString())})`}
           </button>
+          </fieldset>
         </form>
       )}
     </div>

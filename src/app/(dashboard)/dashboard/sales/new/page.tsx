@@ -1,7 +1,7 @@
 import type { Metadata } from "next";
 import Link from "next/link";
 import { prisma } from "@/lib/prisma";
-import { getAllSalesReps } from "@/queries/sales";
+import { getSalesRepOptions } from "@/queries/sales";
 import { getAllProducts } from "@/queries/inventory";
 import { InvoiceForm } from "@/components/sales/invoice-form";
 import { getRequiredSession } from "@/lib/auth-utils";
@@ -30,7 +30,7 @@ export default async function NewInvoicePage({ searchParams }: { searchParams: {
         governorate: { select: { id: true, name: true } },
       },
     }),
-    getAllSalesReps(),
+    getSalesRepOptions(),
     getAllProducts(),
     // Invoices are fulfilled from the SUB warehouse in the client's governorate.
     // Fetching them lets the product combobox show accurate per-governorate stock.

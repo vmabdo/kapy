@@ -2,7 +2,7 @@ import type { Metadata } from "next";
 import Link from "next/link";
 import { notFound } from "next/navigation";
 import { getSalesRepById } from "@/queries/sales";
-import { getAllProducts, getAllWarehouses } from "@/queries/inventory";
+import { getProductOptions } from "@/queries/inventory";
 import { prisma } from "@/lib/prisma";
 import { formatCurrency, formatDate, formatNumber, cn } from "@/lib/utils";
 import { getZonedMonthRange, getZonedYearMonth } from "@/lib/datetime";
@@ -31,7 +31,7 @@ export default async function RepDetailPage({ params }: { params: { id: string }
     getZonedMonthRange(currentYear, currentMonth);
 
   // Financial data for current month
-  const [monthInvoices, bonuses, deductions, targetPeriod, repMonthlyTarget, allProducts, warehouses] = await Promise.all([
+  const [monthInvoices, bonuses, deductions, repMonthlyTarget, allProducts] = await Promise.all([
     prisma.invoice.aggregate({
       where: {
         salesRepId: rep.id,
@@ -50,15 +50,11 @@ export default async function RepDetailPage({ params }: { params: { id: string }
       orderBy: { appliedAt: "desc" },
       take: 20,
     }),
-    prisma.repTargetPeriod.findFirst({
-      where: { salesRepId: rep.id, periodYear: currentYear, periodMonth: currentMonth },
-    }),
     prisma.repMonthlyTarget.findUnique({
       where: { salesRepId_month_year: { salesRepId: rep.id, month: currentMonth, year: currentYear } },
       include: { items: { include: { product: { select: { id: true, name: true, sku: true, unit: true } } } } },
     }),
-    getAllProducts(),
-    getAllWarehouses(),
+    getProductOptions(),
   ]);
 
   const monthSales = Number(monthInvoices._sum.total ?? 0);

@@ -74,7 +74,7 @@ export function RepPerformanceTable({ sortedStats, monthLabel }: Props) {
                   </td>
                   <td className="data-table-cell">
                     <Link
-                      href={`/dashboard/sales/reps/${s.rep.id}`}
+                      href={`/dashboard/sales-reps/${s.rep.id}`}
                       className="flex items-center gap-2.5 group"
                     >
                       <div className="w-7 h-7 rounded-lg bg-primary/10 flex items-center justify-center text-primary font-bold text-xs group-hover:bg-primary group-hover:text-white transition-colors shrink-0">
@@ -184,7 +184,7 @@ export function RepPerformanceTable({ sortedStats, monthLabel }: Props) {
             return (
               <Link
                 key={s.rep.id}
-                href={`/dashboard/sales/reps/${s.rep.id}`}
+                href={`/dashboard/sales-reps/${s.rep.id}`}
                 className="section-card p-5 hover:border-primary/30 transition-all group block"
               >
                 <div className="flex items-center gap-3 mb-4">
