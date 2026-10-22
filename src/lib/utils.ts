@@ -1,6 +1,7 @@
 import { clsx, type ClassValue } from "clsx";
 import { twMerge } from "tailwind-merge";
 import { DiscountType } from "@prisma/client";
+import { BUSINESS_TIME_ZONE, getZonedYearMonth } from "@/lib/datetime";
 
 /** Utility for merging Tailwind class names safely. */
 export function cn(...inputs: ClassValue[]) {
@@ -44,6 +45,7 @@ export function formatDate(
     year: "numeric",
     month: "long",
     day: "numeric",
+    timeZone: BUSINESS_TIME_ZONE,
     ...opts,
   }).format(d);
 }
@@ -55,6 +57,7 @@ export function formatShortDate(date: Date | string): string {
     day: "2-digit",
     month: "2-digit",
     year: "numeric",
+    timeZone: BUSINESS_TIME_ZONE,
   }).format(d);
 }
 
@@ -79,14 +82,14 @@ export function toNumber(value: unknown): number {
 
 /** Generate a sequential invoice number. */
 export function generateInvoiceNumber(sequence: number): string {
-  const year = new Date().getFullYear();
+  const year = getZonedYearMonth(new Date()).year;
   const padded = String(sequence).padStart(5, "0");
   return `INV-${year}-${padded}`;
 }
 
 /** Generate a return number. */
 export function generateReturnNumber(sequence: number): string {
-  const year = new Date().getFullYear();
+  const year = getZonedYearMonth(new Date()).year;
   const padded = String(sequence).padStart(5, "0");
   return `RET-${year}-${padded}`;
 }

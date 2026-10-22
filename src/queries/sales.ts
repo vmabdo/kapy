@@ -1,5 +1,10 @@
 import { prisma } from "@/lib/prisma";
 import { InvoiceStatus, InvoiceType } from "@prisma/client";
+import {
+  getZonedDayRange,
+  getZonedMonthRange,
+  getZonedYearMonth,
+} from "@/lib/datetime";
 
 // ─── Invoices ─────────────────────────────────────────────────
 
@@ -16,13 +21,14 @@ export async function getInvoices(filters?: {
 }) {
   const { status, type, salesRepId, pharmacyId, from, to, query, take = 50, skip = 0 } = filters ?? {};
 
-  // Build date range filter
+  // Build date range filter. `to` is exclusive so callers can pass the start
+  // of the day after the selected local date without off-by-one duplicates.
   const invoiceDateFilter =
     from || to
       ? {
           invoiceDate: {
             ...(from ? { gte: from } : {}),
-            ...(to ? { lte: to } : {}),
+            ...(to ? { lt: to } : {}),
           },
         }
       : {};
@@ -151,24 +157,31 @@ export async function getSalesRepById(id: string) {
  * `getSalesStats` avoids the extra "today" aggregate — important when several
  * dashboard queries are already running against a small connection pool.
  */
-export async function getMonthlySalesStats() {
-  const monthStart = new Date();
-  monthStart.setDate(1);
-  monthStart.setHours(0, 0, 0, 0);
+export async function getMonthlySalesStats(salesRepId?: string) {
+  const now = new Date();
+  const currentPeriod = getZonedYearMonth(now);
+  const { start: monthStart, endExclusive: nextMonthStart } =
+    getZonedMonthRange(currentPeriod.year, currentPeriod.month);
+  const repFilter = salesRepId ? { salesRepId } : {};
 
   const [monthInvoices, totalReceivables] = await Promise.all([
-    // This month's total
+    // This month's total — explicit Africa/Cairo calendar boundaries.
     prisma.invoice.aggregate({
       where: {
-        invoiceDate: { gte: monthStart },
+        invoiceDate: { gte: monthStart, lt: nextMonthStart },
         status: { not: InvoiceStatus.DRAFT },
         isLegacy: false,
+        ...repFilter,
       },
       _sum: { total: true },
     }),
     // Total outstanding credit
     prisma.invoice.aggregate({
-      where: { type: InvoiceType.CREDIT, status: { notIn: [InvoiceStatus.PAID, InvoiceStatus.DRAFT] } },
+      where: {
+        type: InvoiceType.CREDIT,
+        status: { notIn: [InvoiceStatus.PAID, InvoiceStatus.DRAFT] },
+        ...repFilter,
+      },
       _sum: { remainingAmount: true },
     }),
   ]);
@@ -183,18 +196,25 @@ export async function getMonthlySalesStats() {
  * Today + month + receivables. Runs three queries in parallel; prefer
  * `getMonthlySalesStats()` when the "today" numbers are not needed.
  */
-export async function getSalesStats() {
-  const today = new Date();
-  today.setHours(0, 0, 0, 0);
+export async function getSalesStats(salesRepId?: string) {
+  const { start: today, endExclusive: tomorrow } = getZonedDayRange(
+    new Date()
+  );
+  const repFilter = salesRepId ? { salesRepId } : {};
 
   const [todayInvoices, monthlyStats] = await Promise.all([
-    // Today's total
+    // Today's total — explicit Africa/Cairo calendar boundaries.
     prisma.invoice.aggregate({
-      where: { invoiceDate: { gte: today }, status: { not: InvoiceStatus.DRAFT }, isLegacy: false },
+      where: {
+        invoiceDate: { gte: today, lt: tomorrow },
+        status: { not: InvoiceStatus.DRAFT },
+        isLegacy: false,
+        ...repFilter,
+      },
       _sum: { total: true },
       _count: true,
     }),
-    getMonthlySalesStats(),
+    getMonthlySalesStats(salesRepId),
   ]);
 
   return {

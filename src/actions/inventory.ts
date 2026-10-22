@@ -12,6 +12,7 @@ import {
   UserRole,
 } from "@prisma/client";
 import { resolveProductCost } from "@/lib/costing";
+import { getZonedYearMonth } from "@/lib/datetime";
 import { z } from "zod";
 
 // ─── Supplier Schema ────────────────────────────────────────────
@@ -531,6 +532,7 @@ export async function createStockMovement(
               productId: item.productId,
               quantity: item.quantity,
               unitCost: item.unitCost,
+              historicalCost: item.unitCost,
               expiryDate: item.expiryDate ? new Date(item.expiryDate) : undefined,
               batchNumber: item.batchNumber || null,
             })),
@@ -692,7 +694,7 @@ export async function createOpeningStockBalance(
       const openingCount = await tx.stockMovement.count({
         where: { movementType: StockMovementType.OPENING_BALANCE },
       });
-      const referenceNumber = `OPB-${new Date().getFullYear()}-${String(
+      const referenceNumber = `OPB-${getZonedYearMonth(new Date()).year}-${String(
         openingCount + 1
       ).padStart(4, "0")}`;
 
@@ -709,6 +711,7 @@ export async function createOpeningStockBalance(
               productId: item.productId,
               quantity: item.quantity,
               unitCost: item.unitCost,
+              historicalCost: item.unitCost,
             })),
           },
         },
@@ -817,7 +820,7 @@ export async function createStockCountCorrection(
       const movementCount = await tx.stockMovement.count({
         where: { movementType },
       });
-      const referenceNumber = `${isShortage ? "SHR" : "SRP"}-${new Date().getFullYear()}-${String(
+      const referenceNumber = `${isShortage ? "SHR" : "SRP"}-${getZonedYearMonth(new Date()).year}-${String(
         movementCount + 1
       ).padStart(4, "0")}`;
 
@@ -835,6 +838,7 @@ export async function createStockCountCorrection(
               productId: product.id,
               quantity,
               unitCost,
+              historicalCost: unitCost,
             },
           },
         },
@@ -1010,7 +1014,7 @@ export async function dispatchSamples(
       const movementCount = await tx.stockMovement.count({
         where: { movementType: StockMovementType.SAMPLES_DISPATCH },
       });
-      const referenceNumber = `SMP-${new Date().getFullYear()}-${String(
+      const referenceNumber = `SMP-${getZonedYearMonth(new Date()).year}-${String(
         movementCount + 1
       ).padStart(4, "0")}`;
 
@@ -1031,6 +1035,7 @@ export async function dispatchSamples(
               productId: item.productId,
               quantity: item.quantity,
               unitCost: item.unitCost,
+              historicalCost: item.unitCost,
             })),
           },
         },

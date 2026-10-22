@@ -5,6 +5,7 @@ import { prisma } from "@/lib/prisma";
 import { requireRole } from "@/lib/auth-utils";
 import { revalidatePath } from "next/cache";
 import { UserRole } from "@prisma/client";
+import { getZonedYearMonth } from "@/lib/datetime";
 import { z } from "zod";
 import bcrypt from "bcryptjs";
 
@@ -71,7 +72,7 @@ export async function createSalesRep(
     const data = CreateRepSchema.parse(formData);
 
     // Generate unique employee code: REP-YYYY-XXXX
-    const year = new Date().getFullYear();
+    const year = getZonedYearMonth(new Date()).year;
     const count = await prisma.salesRep.count();
     const employeeCode = `REP-${year}-${String(count + 1).padStart(4, "0")}`;
 

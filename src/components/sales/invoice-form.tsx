@@ -11,6 +11,7 @@ import {
 import { zodResolver } from "@hookform/resolvers/zod";
 import { z } from "zod";
 import { InvoiceType } from "@prisma/client";
+import { getZonedDateKey } from "@/lib/datetime";
 
 // DiscountType enum — mirrored from Prisma schema
 const DiscountType = { PERCENTAGE: "PERCENTAGE", FIXED: "FIXED" } as const;
@@ -57,6 +58,8 @@ interface Props {
   salesReps: SalesRepOption[];
   products: ProductOption[];
   initialClientId?: string;
+  /** Sales reps must not be offered the legacy-debt workflow. */
+  allowLegacy?: boolean;
 }
 
 const UpfrontPaymentItemSchema = z.object({
@@ -140,7 +143,13 @@ type FormData = z.input<typeof Schema>;
 /** Client type filter — to let the user switch between Pharmacy / External Warehouse lists */
 type ClientTypeFilter = "PHARMACY" | "EXTERNAL_WAREHOUSE" | "ALL";
 
-export function InvoiceForm({ pharmacies, salesReps, products, initialClientId }: Props) {
+export function InvoiceForm({
+  pharmacies,
+  salesReps,
+  products,
+  initialClientId,
+  allowLegacy = true,
+}: Props) {
   const router = useRouter();
   const [isPending, startTransition] = useTransition();
   const [serverError, setServerError] = useState<string | null>(null);
@@ -163,7 +172,7 @@ export function InvoiceForm({ pharmacies, salesReps, products, initialClientId }
       paidAmount: 0,
       isLegacy: false,
       legacyDebtAmount: 0,
-      issueDate: new Date().toISOString().split('T')[0],
+      issueDate: getZonedDateKey(new Date()),
       upfrontPaymentItems: [],
       items: [{ productId: "", quantity: 1, bonusQuantity: 0, unitPrice: 0 }],
     },
@@ -252,8 +261,7 @@ export function InvoiceForm({ pharmacies, salesReps, products, initialClientId }
     : Number(paidAmount || 0);
   const remainingAmount = Math.max(0, total - upfrontPaid);
 
-  const today = new Date();
-  const invoiceDatePrefix = `INV-${today.getFullYear()}${String(today.getMonth() + 1).padStart(2, "0")}${String(today.getDate()).padStart(2, "0")}-`;
+  const invoiceDatePrefix = `INV-${getZonedDateKey(new Date()).replaceAll("-", "")}-`;
 
   const handleProductChange = (index: number, productId: string) => {
     const product = products.find((p) => p.id === productId);
@@ -399,14 +407,16 @@ export function InvoiceForm({ pharmacies, salesReps, products, initialClientId }
             بيانات الفاتورة
           </div>
           <div className="flex items-center gap-2">
-            <label className="text-xs font-semibold cursor-pointer text-amber-600 dark:text-amber-500 flex items-center gap-2 bg-amber-50 dark:bg-amber-900/10 px-3 py-1.5 rounded-lg border border-amber-200 dark:border-amber-900/50">
-              تسجيل مديونية/فاتورة سابقة
-              <input
-                type="checkbox"
-                {...register("isLegacy")}
-                className="w-4 h-4 text-amber-500 rounded focus:ring-amber-500 border-amber-300"
-              />
-            </label>
+            {allowLegacy && (
+              <label className="text-xs font-semibold cursor-pointer text-amber-600 dark:text-amber-500 flex items-center gap-2 bg-amber-50 dark:bg-amber-900/10 px-3 py-1.5 rounded-lg border border-amber-200 dark:border-amber-900/50">
+                تسجيل مديونية/فاتورة سابقة
+                <input
+                  type="checkbox"
+                  {...register("isLegacy")}
+                  className="w-4 h-4 text-amber-500 rounded focus:ring-amber-500 border-amber-300"
+                />
+              </label>
+            )}
           </div>
         </h2>
         <div className="grid grid-cols-1 md:grid-cols-2 gap-4">

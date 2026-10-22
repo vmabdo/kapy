@@ -1,13 +1,13 @@
 import { NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
-import { auth } from "@/lib/auth";
+import { getOptionalSession } from "@/lib/auth-utils";
 
 export const dynamic = "force-dynamic";
 
 // GET /api/alerts — returns last 15 unread alerts
 export async function GET() {
   try {
-    const session = await auth();
+    const session = await getOptionalSession();
     if (!session) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
 
     const [alerts, count] = await Promise.all([
@@ -36,7 +36,7 @@ export async function GET() {
 // PATCH /api/alerts — mark all unread as READ
 export async function PATCH() {
   try {
-    const session = await auth();
+    const session = await getOptionalSession();
     if (!session) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
 
     await prisma.alert.updateMany({

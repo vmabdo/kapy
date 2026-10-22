@@ -4,12 +4,17 @@ import { prisma } from "@/lib/prisma";
 import { getAllSalesReps } from "@/queries/sales";
 import { getAllProducts } from "@/queries/inventory";
 import { InvoiceForm } from "@/components/sales/invoice-form";
+import { getRequiredSession } from "@/lib/auth-utils";
+import { UserRole } from "@prisma/client";
 import { FileText, ArrowRight } from "lucide-react";
 
 export const metadata: Metadata = { title: "إصدار فاتورة جديدة" };
 export const dynamic = "force-dynamic";
 
 export default async function NewInvoicePage({ searchParams }: { searchParams: { clientId?: string } }) {
+  const session = await getRequiredSession();
+  const isSalesRep = session.user.role === UserRole.SALES_REP;
+
   const [clients, salesReps, products, subWarehouses] = await Promise.all([
     prisma.pharmacy.findMany({
       where: { isActive: true },
@@ -34,6 +39,10 @@ export default async function NewInvoicePage({ searchParams }: { searchParams: {
       select: { id: true, governorateId: true },
     }),
   ]);
+
+  const visibleSalesReps = isSalesRep
+    ? salesReps.filter((rep) => rep.id === session.user.salesRepId)
+    : salesReps;
 
   const warehouseGovernorate = new Map(
     subWarehouses.map((warehouse) => [warehouse.id, warehouse.governorateId])
@@ -97,9 +106,10 @@ export default async function NewInvoicePage({ searchParams }: { searchParams: {
           creditLimit: c.creditLimit === null ? null : Number(c.creditLimit),
           governorate: c.governorate,
         }))}
-        salesReps={salesReps}
+        salesReps={visibleSalesReps}
         products={productOptions}
         initialClientId={searchParams.clientId}
+        allowLegacy={!isSalesRep}
       />
     </div>
   );

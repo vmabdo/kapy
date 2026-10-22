@@ -5,6 +5,7 @@ import { useRouter } from "next/navigation";
 import { addRepBonus, addRepDeduction } from "@/actions/reps";
 import { Gift, Minus, Loader2, ChevronDown, ChevronUp } from "lucide-react";
 import { cn } from "@/lib/utils";
+import { getZonedYearMonth } from "@/lib/datetime";
 
 interface Props {
   repId: string;
@@ -14,8 +15,7 @@ const inputClass =
   "w-full px-3 py-2 rounded-xl border border-border bg-background text-sm focus:outline-none focus:ring-2 focus:ring-primary/25 focus:border-primary/50 transition-all";
 
 function getCurrentYearMonth() {
-  const now = new Date();
-  return { year: now.getFullYear(), month: now.getMonth() + 1 };
+  return getZonedYearMonth(new Date());
 }
 
 export function BonusDeductionForms({ repId }: Props) {

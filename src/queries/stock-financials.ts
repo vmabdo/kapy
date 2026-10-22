@@ -1,6 +1,6 @@
 import { StockMovementSource, StockMovementType } from "@prisma/client";
 import { prisma } from "@/lib/prisma";
-import { resolveMovementItemValue, resolveProductCost } from "@/lib/costing";
+import { resolveHistoricalCost, resolveMovementItemValue, resolveProductCost } from "@/lib/costing";
 
 /**
  * Small read-only query layer for the inventory-related figures that appear in
@@ -16,6 +16,7 @@ interface MovementValueRow {
   items: Array<{
     quantity: unknown;
     unitCost: unknown;
+    historicalCost: unknown;
     product: { costPrice: unknown; sellingPrice: unknown };
   }>;
 }
@@ -26,6 +27,7 @@ const movementValueSelect = {
     select: {
       quantity: true,
       unitCost: true,
+      historicalCost: true,
       product: { select: { costPrice: true, sellingPrice: true } },
     },
   },
@@ -43,29 +45,108 @@ function getMovementValue(movement: MovementValueRow): number {
   );
 }
 
+/** `to` is exclusive so adjacent periods cannot double-count a boundary row. */
 function dateFilter(from?: Date, to?: Date) {
   if (!from && !to) return undefined;
   return {
     ...(from ? { gte: from } : {}),
-    ...(to ? { lte: to } : {}),
+    ...(to ? { lt: to } : {}),
   };
 }
 
-/** Current value of all positive stock at product cost. */
+/**
+ * Current value of positive stock using the latest historical receipt cost
+ * snapshot per warehouse/product.
+ *
+ * Using Product.costPrice here would retroactively change the balance sheet the
+ * moment an admin edits a product cost. We prefer the most recent inbound
+ * movement's immutable cost and only fall back to the live product cost when a
+ * stock row has no movement history at all (legacy/imported data).
+ */
 export async function getInventoryValuation(): Promise<number> {
-  const stockItems = await prisma.stockItem.findMany({
-    where: { quantity: { gt: 0 } },
-    select: {
-      quantity: true,
-      product: { select: { costPrice: true, sellingPrice: true } },
-    },
-  });
+  const [stockItems, costMovements] = await Promise.all([
+    prisma.stockItem.findMany({
+      where: { quantity: { gt: 0 } },
+      select: {
+        warehouseId: true,
+        productId: true,
+        quantity: true,
+        product: { select: { costPrice: true, sellingPrice: true } },
+      },
+    }),
+    prisma.stockMovementItem.findMany({
+      where: {
+        stockMovement: {
+          targetWarehouseId: { not: null },
+          movementType: {
+            in: [
+              StockMovementType.INBOUND,
+              StockMovementType.OPENING_BALANCE,
+              StockMovementType.ADJUSTMENT_IN,
+              StockMovementType.RETURN_INBOUND,
+            ],
+          },
+        },
+        OR: [
+          { historicalCost: { gt: 0 } },
+          { unitCost: { not: null } },
+        ],
+      },
+      select: {
+        productId: true,
+        historicalCost: true,
+        unitCost: true,
+        stockMovement: {
+          select: {
+            targetWarehouseId: true,
+            movedAt: true,
+          },
+        },
+      },
+    }),
+  ]);
 
-  return stockItems.reduce(
-    (sum, item) =>
-      sum + Number(item.quantity) * resolveProductCost(item.product),
-    0
-  );
+  const latestWarehouseCost = new Map<
+    string,
+    { cost: number; movedAt: number }
+  >();
+  const latestProductCost = new Map<
+    string,
+    { cost: number; movedAt: number }
+  >();
+
+  for (const movementItem of costMovements) {
+    const warehouseId = movementItem.stockMovement.targetWarehouseId;
+    if (!warehouseId) continue;
+
+    const movedAt = movementItem.stockMovement.movedAt.getTime();
+    const cost = resolveHistoricalCost(movementItem);
+    const warehouseKey = `${warehouseId}:${movementItem.productId}`;
+
+    const currentWarehouseCost = latestWarehouseCost.get(warehouseKey);
+    if (!currentWarehouseCost || movedAt > currentWarehouseCost.movedAt) {
+      latestWarehouseCost.set(warehouseKey, { cost, movedAt });
+    }
+
+    const currentProductCost = latestProductCost.get(movementItem.productId);
+    if (!currentProductCost || movedAt > currentProductCost.movedAt) {
+      latestProductCost.set(movementItem.productId, { cost, movedAt });
+    }
+  }
+
+  return stockItems.reduce((sum, item) => {
+    const warehouseSnapshot = latestWarehouseCost.get(
+      `${item.warehouseId}:${item.productId}`
+    );
+    // A warehouse-level snapshot is preferred; a product-level snapshot is a
+    // safe fallback for imported stock rows. Live cost is the last resort.
+    const unitCost =
+      warehouseSnapshot?.cost ??
+      latestProductCost.get(item.productId)?.cost ??
+      resolveProductCost(item.product);
+
+    return sum + Number(item.quantity) * unitCost;
+  }, 0);
 }
 
 /** All-time value of warehouse opening balances (opening inventory capital). */

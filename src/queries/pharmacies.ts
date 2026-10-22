@@ -1,4 +1,5 @@
 import { prisma } from "@/lib/prisma";
+import { getZonedYearMonth } from "@/lib/datetime";
 
 // ─── Pharmacies ───────────────────────────────────────────────
 
@@ -21,9 +22,9 @@ export async function getPharmacies(filters?: { governorateId?: string; salesRep
 }
 
 export async function getPharmacyById(id: string) {
-  const now = new Date();
-  const year = now.getFullYear();
-  const month = now.getMonth() + 1;
+  const currentPeriod = getZonedYearMonth(new Date());
+  const year = currentPeriod.year;
+  const month = currentPeriod.month;
 
   return prisma.pharmacy.findUnique({
     where: { id },
@@ -43,9 +44,9 @@ export async function getPharmacyById(id: string) {
 }
 
 export async function getPharmacyStats() {
-  const now = new Date();
-  const year = now.getFullYear();
-  const month = now.getMonth() + 1;
+  const currentPeriod = getZonedYearMonth(new Date());
+  const year = currentPeriod.year;
+  const month = currentPeriod.month;
 
   const [totalPharmacies, totalCredit, topPerformers] = await Promise.all([
     prisma.pharmacy.count({ where: { clientType: "PHARMACY" } }),

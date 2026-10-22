@@ -122,14 +122,17 @@ enum ClientType {
 // ============================================================
 
 model User {
-  id           String   @id @default(cuid())
-  email        String   @unique
-  name         String
-  passwordHash String
-  role         UserRole @default(VIEWER)
-  isActive     Boolean  @default(true)
-  createdAt    DateTime @default(now())
-  updatedAt    DateTime @updatedAt
+  id             String   @id @default(cuid())
+  email          String   @unique
+  name           String
+  passwordHash   String
+  role           UserRole @default(VIEWER)
+  isActive       Boolean  @default(true)
+  /// Increment to invalidate every JWT issued before the change (password
+  /// reset, account recovery, forced logout, etc.).
+  sessionVersion Int      @default(0)
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
 
   // Relations
   salesRep SalesRep?
@@ -332,6 +335,8 @@ model StockMovement {
   items           StockMovementItem[]
 
   @@index([movementType, movedAt])
+  @@index([sourceWarehouseId, createdAt])
+  @@index([targetWarehouseId, createdAt])
   @@map("stock_movements")
 }
 
@@ -341,6 +346,9 @@ model StockMovementItem {
   productId       String
   quantity        Decimal   @db.Decimal(12, 3)
   unitCost        Decimal?  @db.Decimal(12, 2)
+  /// Cost snapshot at the time of the movement. Unlike Product.costPrice,
+  /// this value never changes when a product's current cost is edited.
+  historicalCost  Decimal   @default(0) @db.Decimal(12, 2)
   expiryDate      DateTime?
   batchNumber     String?
 
@@ -348,6 +356,8 @@ model StockMovementItem {
   stockMovement StockMovement @relation(fields: [stockMovementId], references: [id], onDelete: Cascade)
   product       Product       @relation(fields: [productId], references: [id])
 
+  @@index([stockMovementId])
+  @@index([productId])
   @@map("stock_movement_items")
 }
 
@@ -428,8 +438,8 @@ model SalesRep {
 
   // Relations
   /// Optional — only set if rep has a system account
-  user               User?              @relation(fields: [userId], references: [id])
-  governorate        Governorate?       @relation(fields: [governorateId], references: [id])
+  user               User?               @relation(fields: [userId], references: [id])
+  governorate        Governorate?        @relation(fields: [governorateId], references: [id])
   assignedPharmacies RepPharmacy[]
   invoices           Invoice[]
   stockMovements     StockMovement[]
@@ -610,6 +620,9 @@ model Invoice {
   @@index([invoiceNumber])
   @@index([invoiceDate])
   @@index([createdAt])
+  @@index([pharmacyId, createdAt])
+  @@index([salesRepId, createdAt])
+  @@index([status, dueDate])
   @@map("invoices")
 }
 
@@ -627,11 +640,16 @@ model InvoiceItem {
   discount            Decimal @default(0) @db.Decimal(12, 2) // per-unit discount (legacy)
   vatRate             Decimal @default(0) @db.Decimal(5, 2)
   lineTotal           Decimal @db.Decimal(14, 2)
+  /// Product cost snapshot at invoice time. P&L COGS must use this value so
+  /// later edits to Product.costPrice never rewrite historical profit.
+  historicalCost      Decimal @default(0) @db.Decimal(12, 2)
 
   // Relations
   invoice Invoice @relation(fields: [invoiceId], references: [id], onDelete: Cascade)
   product Product @relation(fields: [productId], references: [id])
 
+  @@index([invoiceId])
+  @@index([productId])
   @@map("invoice_items")
 }
 
@@ -647,15 +665,15 @@ model Payment {
   createdAt   DateTime      @default(now())
 
   // Relations
-  invoice      Invoice              @relation(fields: [invoiceId], references: [id])
-  pharmacy     Pharmacy             @relation(fields: [pharmacyId], references: [id])
+  invoice      Invoice             @relation(fields: [invoiceId], references: [id])
+  pharmacy     Pharmacy            @relation(fields: [pharmacyId], references: [id])
   transaction  Transaction?
   /// NEW: Itemized breakdown — which products were paid for in this payment
   paymentItems PaymentItem[]
   /// LEGACY DEBT: Dummy target items — only for rep target tracking, never touch stock
   targetItems  PaymentTargetItem[]
 
-  @@index([invoiceId])
+  @@index([invoiceId, createdAt])
   @@map("payments")
 }
 
@@ -679,7 +697,7 @@ model PaymentItem {
 /// LEGACY invoice. Used exclusively for sales rep target calculations.
 /// CRITICAL: These items NEVER affect inventory stock levels.
 model PaymentTargetItem {
-  id         String   @id @default(cuid())
+  id         String @id @default(cuid())
   paymentId  String
   productId  String
   salesRepId String
@@ -716,6 +734,9 @@ model Return {
   items       ReturnItem[]
   transaction Transaction?
 
+  @@index([invoiceId])
+  @@index([pharmacyId])
+  @@index([returnDate])
   @@map("returns")
 }
 
@@ -783,6 +804,7 @@ model Transaction {
   @@index([treasuryId])
   @@index([type])
   @@index([transactedAt])
+  @@index([createdAt])
   @@map("transactions")
 }
 

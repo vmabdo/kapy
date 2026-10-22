@@ -2,6 +2,7 @@ import type { Metadata } from "next";
 import { getAllSalesReps } from "@/queries/sales";
 import { prisma } from "@/lib/prisma";
 import { formatCurrency } from "@/lib/utils";
+import { getZonedMonthRange, getZonedYearMonth } from "@/lib/datetime";
 import { Users, Target } from "lucide-react";
 import { AddRepDialog } from "./add-rep-dialog";
 import { SalesRepsList } from "@/components/sales/reps-list";
@@ -15,23 +16,25 @@ export default async function SalesRepsPage() {
     prisma.governorate.findMany({ orderBy: { name: "asc" } }),
   ]);
 
-  // Calculate current month stats per rep
-  const now = new Date();
-  
+  // Calculate current month stats per rep using the Cairo business calendar.
+  const currentPeriod = getZonedYearMonth(new Date());
+  const { start: startOfMonth, endExclusive: nextMonthStart } =
+    getZonedMonthRange(currentPeriod.year, currentPeriod.month);
+
   const [monthSalesAgg, bonusAgg, deductionAgg] = await Promise.all([
     prisma.invoice.groupBy({
       by: ['salesRepId'],
-      where: { invoiceDate: { gte: new Date(now.getFullYear(), now.getMonth(), 1) } },
+      where: { invoiceDate: { gte: startOfMonth, lt: nextMonthStart } },
       _sum: { total: true },
     }),
     prisma.repBonus.groupBy({
       by: ['salesRepId'],
-      where: { periodYear: now.getFullYear(), periodMonth: now.getMonth() + 1 },
+      where: { periodYear: currentPeriod.year, periodMonth: currentPeriod.month },
       _sum: { amount: true },
     }),
     prisma.repDeduction.groupBy({
       by: ['salesRepId'],
-      where: { periodYear: now.getFullYear(), periodMonth: now.getMonth() + 1 },
+      where: { periodYear: currentPeriod.year, periodMonth: currentPeriod.month },
       _sum: { amount: true },
     }),
   ]);

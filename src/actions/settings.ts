@@ -112,7 +112,11 @@ export async function updateAdminCredentials(
 
     await prisma.user.update({
       where: { id: data.userId },
-      data: updateData,
+      data: {
+        ...updateData,
+        // Credentials changed: invalidate every JWT issued before this moment.
+        sessionVersion: { increment: 1 },
+      },
     });
 
     return { success: true, data: undefined, message: "تم تحديث بيانات الحساب بنجاح" };

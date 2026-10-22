@@ -11,7 +11,8 @@ import { DeleteInvoiceButton } from "@/components/sales/delete-invoice-button";
 import { PrintButton } from "./print-button";
 import { FileText, ArrowRight, Printer, CheckCircle2, AlertTriangle, Building2, User } from "lucide-react";
 import { formatCurrency, formatDate, cn } from "@/lib/utils";
-import { InvoiceStatus, InvoiceType } from "@prisma/client";
+import { getRequiredSession } from "@/lib/auth-utils";
+import { InvoiceStatus, InvoiceType, UserRole } from "@prisma/client";
 import type { Metadata } from "next";
 
 interface Props {
@@ -19,8 +20,13 @@ interface Props {
 }
 
 export async function generateMetadata({ params }: Props): Promise<Metadata> {
+  const session = await getRequiredSession();
   const inv = await getInvoiceById(params.id);
-  return { title: inv ? `فاتورة ${inv.invoiceNumber}` : "تفاصيل الفاتورة" };
+  const canView =
+    inv &&
+    (session.user.role !== UserRole.SALES_REP ||
+      inv.salesRepId === session.user.salesRepId);
+  return { title: canView ? `فاتورة ${inv.invoiceNumber}` : "تفاصيل الفاتورة" };
 }
 
 export const dynamic = "force-dynamic";
@@ -35,12 +41,24 @@ const STATUS_LABELS: Record<InvoiceStatus, { label: string; class: string }> = {
 };
 
 export default async function InvoiceDetailPage({ params }: Props) {
-  const [invoice, products, salesReps] = await Promise.all([
-    getInvoiceById(params.id),
+  const session = await getRequiredSession();
+  const invoice = await getInvoiceById(params.id);
+  if (!invoice) notFound();
+
+  // Enforce row-level ownership for sales reps. This also protects invoices
+  // reached directly by URL rather than through the scoped list.
+  if (
+    session.user.role === UserRole.SALES_REP &&
+    invoice.salesRepId !== session.user.salesRepId
+  ) {
+    notFound();
+  }
+
+  const canManageInvoice = session.user.role !== UserRole.SALES_REP;
+  const [products, salesReps] = await Promise.all([
     getAllProducts(),
     getAllSalesReps(),
   ]);
-  if (!invoice) notFound();
 
   const allProductOptions = products.map((p) => ({
     id: p.id,
@@ -113,14 +131,16 @@ export default async function InvoiceDetailPage({ params }: Props) {
           </div>
 
           <div className="flex items-center gap-2 flex-wrap">
-            <DeleteInvoiceButton
-              invoiceId={invoice.id}
-              invoiceNumber={invoice.invoiceNumber}
-              total={Number(invoice.total)}
-              remainingAmount={Number(invoice.remainingAmount)}
-              isLegacy={invoice.isLegacy}
-              hasReturns={invoice.returns.length > 0}
-            />
+            {canManageInvoice && (
+              <DeleteInvoiceButton
+                invoiceId={invoice.id}
+                invoiceNumber={invoice.invoiceNumber}
+                total={Number(invoice.total)}
+                remainingAmount={Number(invoice.remainingAmount)}
+                isLegacy={invoice.isLegacy}
+                hasReturns={invoice.returns.length > 0}
+              />
+            )}
             <PrintButton />
           </div>
         </div>
@@ -179,17 +199,19 @@ export default async function InvoiceDetailPage({ params }: Props) {
             </div>
 
             {/* Quick sales-rep correction (metadata only) */}
-            <div className="mb-8 -mt-4 print:hidden">
-              <InvoiceSalesRepEditor
-                invoiceId={invoice.id}
-                currentSalesRepId={invoice.salesRepId}
-                salesReps={salesReps.map((rep) => ({
-                  id: rep.id,
-                  name: rep.name,
-                  employeeCode: rep.employeeCode,
-                }))}
-              />
-            </div>
+            {canManageInvoice && (
+              <div className="mb-8 -mt-4 print:hidden">
+                <InvoiceSalesRepEditor
+                  invoiceId={invoice.id}
+                  currentSalesRepId={invoice.salesRepId}
+                  salesReps={salesReps.map((rep) => ({
+                    id: rep.id,
+                    name: rep.name,
+                    employeeCode: rep.employeeCode,
+                  }))}
+                />
+              </div>
+            )}
 
             {/* Items Table / Legacy Debt Banner */}
             {invoice.isLegacy ? (
@@ -320,21 +342,23 @@ export default async function InvoiceDetailPage({ params }: Props) {
         <div className="xl:col-span-2 space-y-6 print:hidden">
           
           {/* Payment Form (Only if remaining balance > 0) */}
-          <PaymentForm
-            invoiceId={invoice.id}
-            remainingAmount={Number(invoice.remainingAmount)}
-            invoiceItems={invoiceItemsForPayment}
-            isLegacy={invoice.isLegacy}
-            allProducts={allProductOptions}
-            salesReps={salesReps.map((r) => ({
-              id: r.id,
-              name: r.name,
-              employeeCode: r.employeeCode,
-            }))}
-          />
+          {canManageInvoice && (
+            <PaymentForm
+              invoiceId={invoice.id}
+              remainingAmount={Number(invoice.remainingAmount)}
+              invoiceItems={invoiceItemsForPayment}
+              isLegacy={invoice.isLegacy}
+              allProducts={allProductOptions}
+              salesReps={salesReps.map((r) => ({
+                id: r.id,
+                name: r.name,
+                employeeCode: r.employeeCode,
+              }))}
+            />
+          )}
 
           {/* Return Form (Only if not cancelled) */}
-          {invoice.status !== InvoiceStatus.CANCELLED && (
+          {canManageInvoice && invoice.status !== InvoiceStatus.CANCELLED && (
             <ReturnForm
               invoiceId={invoice.id}
               invoiceItems={invoiceItemsForPayment}
@@ -362,10 +386,12 @@ export default async function InvoiceDetailPage({ params }: Props) {
                             {payment.referenceNo}
                           </span>
                         )}
-                        <DeletePaymentButton
-                          paymentId={payment.id}
-                          amount={Number(payment.amount)}
-                        />
+                        {canManageInvoice && (
+                          <DeletePaymentButton
+                            paymentId={payment.id}
+                            amount={Number(payment.amount)}
+                          />
+                        )}
                       </div>
                     </div>
                     {/* Display target items for legacy payments */}
@@ -424,12 +450,14 @@ export default async function InvoiceDetailPage({ params }: Props) {
                             </p>
                           )}
                         </div>
-                        <DeleteReturnButton
-                          returnId={returnRecord.id}
-                          returnNumber={returnRecord.returnNumber}
-                          amount={Number(returnRecord.totalAmount)}
-                          isCashRefund={isCashRefund}
-                        />
+                        {canManageInvoice && (
+                          <DeleteReturnButton
+                            returnId={returnRecord.id}
+                            returnNumber={returnRecord.returnNumber}
+                            amount={Number(returnRecord.totalAmount)}
+                            isCashRefund={isCashRefund}
+                          />
+                        )}
                       </div>
 
                       {returnRecord.items.length > 0 && (

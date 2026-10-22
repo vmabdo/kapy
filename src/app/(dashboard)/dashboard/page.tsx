@@ -7,6 +7,14 @@ import { prisma } from "@/lib/prisma";
 import { getMonthlySalesStats } from "@/queries/sales";
 import { formatCurrency, formatDate, cn } from "@/lib/utils";
 import {
+  getZonedDateKey,
+  getZonedDateKeysForLastDays,
+  getZonedDayRange,
+  getZonedMonthRange,
+  getZonedYearMonth,
+  parseDateInputToZonedStart,
+} from "@/lib/datetime";
+import {
   LayoutDashboard,
   TrendingUp,
   Package,
@@ -101,13 +109,15 @@ function DashboardSkeleton() {
 }
 
 async function DashboardContent({ session }: { session: any }) {
-  const startOfMonth = new Date();
-  startOfMonth.setDate(1);
-  startOfMonth.setHours(0, 0, 0, 0);
+  const now = new Date();
+  const currentPeriod = getZonedYearMonth(now);
+  const { start: startOfMonth, endExclusive: nextMonthStart } =
+    getZonedMonthRange(currentPeriod.year, currentPeriod.month);
 
-  const thirtyDaysAgo = new Date();
-  thirtyDaysAgo.setDate(thirtyDaysAgo.getDate() - 30);
-  thirtyDaysAgo.setHours(0, 0, 0, 0);
+  // 30 local calendar days ending today (not server-local dates).
+  const salesDateKeys = getZonedDateKeysForLastDays(30, now);
+  const thirtyDaysAgo =
+    parseDateInputToZonedStart(salesDateKeys[0]) ?? getZonedDayRange(now).start;
 
   // Keep database concurrency low. Supabase's session pooler can reject
   // bursts of 10+ simultaneous connections, so run the dashboard reads in
@@ -117,7 +127,7 @@ async function DashboardContent({ session }: { session: any }) {
   const [monthPayments, productsData, thirtyDayInvoices] = await Promise.all([
     // 1. Total Cash Collected (Current Month)
     prisma.payment.aggregate({
-      where: { paidAt: { gte: startOfMonth } },
+      where: { paidAt: { gte: startOfMonth, lt: nextMonthStart } },
       _sum: { amount: true },
     }),
     // 2. Products: used for low-stock alerts and top-product names
@@ -153,7 +163,12 @@ async function DashboardContent({ session }: { session: any }) {
     // 6. Top Products
     prisma.invoiceItem.groupBy({
       by: ["productId"],
-      where: { invoice: { invoiceDate: { gte: startOfMonth }, status: { not: "DRAFT" } } },
+      where: {
+        invoice: {
+          invoiceDate: { gte: startOfMonth, lt: nextMonthStart },
+          status: { not: "DRAFT" },
+        },
+      },
       _sum: { lineTotal: true, quantity: true },
       orderBy: { _sum: { lineTotal: "desc" } },
       take: 5,
@@ -186,18 +201,16 @@ async function DashboardContent({ session }: { session: any }) {
   const lowStockCount = lowStockAlerts.length;
   const topLowStock = lowStockAlerts.slice(0, 5);
 
-  // Group 30-day sales
+  // Group 30-day sales by Africa/Cairo calendar date.
   const salesByDay = new Map<string, number>();
-  for (let i = 0; i < 30; i++) {
-    const d = new Date(thirtyDaysAgo);
-    d.setDate(d.getDate() + i);
-    salesByDay.set(d.toISOString().split('T')[0], 0);
+  for (const key of salesDateKeys) {
+    salesByDay.set(key, 0);
   }
-  
-  thirtyDayInvoices.forEach(inv => {
-    const dStr = inv.invoiceDate.toISOString().split('T')[0];
-    if (salesByDay.has(dStr)) {
-      salesByDay.set(dStr, salesByDay.get(dStr)! + Number(inv.total));
+
+  thirtyDayInvoices.forEach((inv) => {
+    const dateKey = getZonedDateKey(inv.invoiceDate);
+    if (salesByDay.has(dateKey)) {
+      salesByDay.set(dateKey, salesByDay.get(dateKey)! + Number(inv.total));
     }
   });
 

@@ -1,6 +1,5 @@
 import { auth } from "@/lib/auth";
 import { NextResponse } from "next/server";
-import type { NextRequest } from "next/server";
 import { UserRole } from "@prisma/client";
 
 // Rate limiting map (IP -> info)
@@ -8,57 +7,137 @@ const rateLimits = new Map<string, { count: number; lastReset: number }>();
 const RATE_LIMIT_MAX = 50;
 const RATE_LIMIT_WINDOW = 10000; // 10 seconds
 
-/**
- * Route permission matrix.
- * Maps path prefixes to the minimum roles allowed to access them.
- */
-const ROUTE_PERMISSIONS: Record<string, UserRole[]> = {
-  "/dashboard/treasury": [UserRole.SUPER_ADMIN, UserRole.ADMIN, UserRole.ACCOUNTANT],
-  "/dashboard/inventory": [
-    UserRole.SUPER_ADMIN,
-    UserRole.ADMIN,
-    UserRole.WAREHOUSE_MANAGER,
-    UserRole.SALES_MANAGER,
-  ],
-  "/dashboard/sales": [
-    UserRole.SUPER_ADMIN,
-    UserRole.ADMIN,
-    UserRole.SALES_MANAGER,
-    UserRole.SALES_REP,
-  ],
-  "/dashboard/pharmacies": [
-    UserRole.SUPER_ADMIN,
-    UserRole.ADMIN,
-    UserRole.SALES_MANAGER,
-    UserRole.ACCOUNTANT,
-  ],
-  "/dashboard/reports": [
-    UserRole.SUPER_ADMIN,
-    UserRole.ADMIN,
-    UserRole.SALES_MANAGER,
-    UserRole.ACCOUNTANT,
-  ],
-  "/dashboard/settings": [UserRole.SUPER_ADMIN, UserRole.ADMIN],
-  "/dashboard": [
-    UserRole.SUPER_ADMIN,
-    UserRole.ADMIN,
-    UserRole.WAREHOUSE_MANAGER,
-    UserRole.SALES_MANAGER,
-    UserRole.ACCOUNTANT,
-    UserRole.SALES_REP,
-    UserRole.VIEWER,
-  ],
-};
+interface RouteRule {
+  /** Dashboard route prefix. Matching is segment-aware, not a raw string prefix. */
+  path: string;
+  allowedRoles: readonly UserRole[];
+}
 
-export default auth(((req: any) => {
+/**
+ * Strict dashboard route matrix.
+ *
+ * Rules are checked most-specific-first and matched on whole path segments.
+ * That matters for siblings such as `/dashboard/sales` and
+ * `/dashboard/sales-reps`: a naive `startsWith` lets the first rule swallow the
+ * second one. Unlisted dashboard routes fall back to ADMIN/SUPER_ADMIN only.
+ *
+ * SALES_REP is deliberately absent from every HR, finance, company, report,
+ * treasury and inventory rule. They keep their dashboard, client list and the
+ * invoice workflow.
+ */
+const ROUTE_RULES: readonly RouteRule[] = [
+  {
+    path: "/dashboard/financial-statements",
+    allowedRoles: [UserRole.SUPER_ADMIN, UserRole.ADMIN, UserRole.ACCOUNTANT],
+  },
+  {
+    path: "/dashboard/treasury",
+    allowedRoles: [UserRole.SUPER_ADMIN, UserRole.ADMIN, UserRole.ACCOUNTANT],
+  },
+  {
+    path: "/dashboard/sales-reps",
+    allowedRoles: [UserRole.SUPER_ADMIN, UserRole.ADMIN, UserRole.SALES_MANAGER],
+  },
+  {
+    // HR / payroll area — never expose to sales reps.
+    path: "/dashboard/sales/reps",
+    allowedRoles: [UserRole.SUPER_ADMIN, UserRole.ADMIN, UserRole.SALES_MANAGER],
+  },
+  {
+    path: "/dashboard/companies",
+    allowedRoles: [
+      UserRole.SUPER_ADMIN,
+      UserRole.ADMIN,
+      UserRole.SALES_MANAGER,
+      UserRole.ACCOUNTANT,
+    ],
+  },
+  {
+    path: "/dashboard/reports",
+    allowedRoles: [
+      UserRole.SUPER_ADMIN,
+      UserRole.ADMIN,
+      UserRole.SALES_MANAGER,
+      UserRole.ACCOUNTANT,
+    ],
+  },
+  {
+    path: "/dashboard/inventory",
+    allowedRoles: [
+      UserRole.SUPER_ADMIN,
+      UserRole.ADMIN,
+      UserRole.WAREHOUSE_MANAGER,
+      UserRole.SALES_MANAGER,
+    ],
+  },
+  {
+    path: "/dashboard/settings",
+    allowedRoles: [UserRole.SUPER_ADMIN, UserRole.ADMIN],
+  },
+  {
+    // Invoice list/detail/create. Individual rep-level row filtering belongs in
+    // the query layer; this gate only controls module access.
+    path: "/dashboard/sales",
+    allowedRoles: [
+      UserRole.SUPER_ADMIN,
+      UserRole.ADMIN,
+      UserRole.SALES_MANAGER,
+      UserRole.SALES_REP,
+    ],
+  },
+  {
+    path: "/dashboard/pharmacies",
+    allowedRoles: [
+      UserRole.SUPER_ADMIN,
+      UserRole.ADMIN,
+      UserRole.SALES_MANAGER,
+      UserRole.ACCOUNTANT,
+      UserRole.SALES_REP,
+    ],
+  },
+].sort((a, b) => b.path.length - a.path.length);
+
+const ADMIN_FALLBACK_ROLES: readonly UserRole[] = [
+  UserRole.SUPER_ADMIN,
+  UserRole.ADMIN,
+];
+
+const DASHBOARD_ROOT_ROLES: readonly UserRole[] = [
+  UserRole.SUPER_ADMIN,
+  UserRole.ADMIN,
+  UserRole.WAREHOUSE_MANAGER,
+  UserRole.SALES_MANAGER,
+  UserRole.ACCOUNTANT,
+  UserRole.SALES_REP,
+  UserRole.VIEWER,
+];
+
+function normalizePathname(pathname: string): string {
+  if (pathname.length <= 1) return pathname;
+  return pathname.replace(/\/+$/, "") || "/";
+}
+
+function matchesRoute(pathname: string, route: string): boolean {
+  return pathname === route || pathname.startsWith(`${route}/`);
+}
+
+function getRouteRule(pathname: string): RouteRule | undefined {
+  return ROUTE_RULES.find((rule) => matchesRoute(pathname, rule.path));
+}
+
+export default auth((req) => {
   const { nextUrl, auth: session } = req;
+  const pathname = normalizePathname(nextUrl.pathname);
   const isLoggedIn = !!session?.user;
-  const isAuthPage = nextUrl.pathname.startsWith("/login");
-  const isDashboard = nextUrl.pathname.startsWith("/dashboard");
+  const isAuthPage = pathname === "/login" || pathname.startsWith("/login/");
+  const isDashboard = pathname === "/dashboard" || pathname.startsWith("/dashboard/");
 
   // Apply rate limiting for POST requests (Server actions & API routes)
   if (req.method === "POST") {
-    const ip = req.headers.get("x-forwarded-for") || req.headers.get("x-real-ip") || req.ip || "unknown";
+    const ip =
+      req.headers.get("x-forwarded-for") ||
+      req.headers.get("x-real-ip") ||
+      "unknown";
     const now = Date.now();
     const limitInfo = rateLimits.get(ip) ?? { count: 0, lastReset: now };
 
@@ -85,26 +164,31 @@ export default auth(((req: any) => {
     return NextResponse.redirect(new URL("/dashboard", nextUrl));
   }
 
-  // Role-based access control for dashboard sub-routes
+  // Strict role-based access control for every dashboard route.
   if (isLoggedIn && isDashboard) {
     const userRole = session?.user?.role as UserRole | undefined;
+    if (!userRole) {
+      return NextResponse.redirect(new URL("/login", nextUrl));
+    }
 
-    // Find the most specific matching route permission
-    const matchedRoute = Object.keys(ROUTE_PERMISSIONS)
-      .filter((route) => nextUrl.pathname.startsWith(route))
-      .sort((a, b) => b.length - a.length)[0]; // most specific match first
+    if (pathname === "/dashboard") {
+      if (!DASHBOARD_ROOT_ROLES.includes(userRole)) {
+        return NextResponse.redirect(new URL("/login", nextUrl));
+      }
+    } else {
+      const rule = getRouteRule(pathname);
+      const allowedRoles = rule?.allowedRoles ?? ADMIN_FALLBACK_ROLES;
 
-    if (matchedRoute && userRole) {
-      const allowedRoles = ROUTE_PERMISSIONS[matchedRoute];
       if (!allowedRoles.includes(userRole)) {
-        // Redirect to dashboard root with a 403 indicator
-        return NextResponse.redirect(new URL("/dashboard?error=forbidden", nextUrl));
+        return NextResponse.redirect(
+          new URL("/dashboard?error=forbidden", nextUrl)
+        );
       }
     }
   }
 
   return NextResponse.next();
-}) as any);
+});
 
 export const config = {
   /**

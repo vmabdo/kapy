@@ -1,26 +1,86 @@
 import { auth } from "@/lib/auth";
+import { prisma } from "@/lib/prisma";
 import { redirect } from "next/navigation";
 import { UserRole } from "@prisma/client";
+import { cache } from "react";
+import type { Session } from "next-auth";
+
+type SessionState =
+  | { status: "unauthenticated" }
+  | { status: "stale" }
+  | {
+      status: "authenticated";
+      session: Session;
+    };
+
+/**
+ * Load the JWT session and verify it against the current database user.
+ *
+ * JWTs are valid for 30 days, so a token alone cannot be trusted after a user
+ * is disabled, deleted, or has their password changed. `sessionVersion` is
+ * bumped whenever credentials change; comparing it here immediately invalidates
+ * every token issued before that change.
+ *
+ * `cache()` deduplicates the check within a single server render (layout +
+ * pages + actions), avoiding one database roundtrip per guard.
+ */
+const loadSessionState = cache(async (): Promise<SessionState> => {
+  const session = await auth();
+  if (!session?.user?.id) {
+    return { status: "unauthenticated" };
+  }
+
+  const dbUser = await prisma.user.findUnique({
+    where: { id: session.user.id },
+    select: {
+      id: true,
+      isActive: true,
+      role: true,
+      sessionVersion: true,
+      salesRep: { select: { id: true } },
+    },
+  });
+
+  if (
+    !dbUser ||
+    !dbUser.isActive ||
+    dbUser.sessionVersion !== session.user.sessionVersion
+  ) {
+    return { status: "stale" };
+  }
+
+  // Role changes and rep reassignments take effect immediately instead of
+  // waiting for the old JWT to expire.
+  session.user.role = dbUser.role;
+  session.user.salesRepId = dbUser.salesRep?.id ?? null;
+
+  return { status: "authenticated", session };
+});
 
 /**
  * Server-side session helper.
  * Call this inside Server Components or Server Actions to get the session.
- * Redirects to /login if not authenticated.
+ * Redirects to /login if not authenticated, and through the session-expiry
+ * route (which clears the cookie) if the token is no longer valid.
  */
 export async function getRequiredSession() {
-  const session = await auth();
-  if (!session?.user) {
+  const state = await loadSessionState();
+  if (state.status === "unauthenticated") {
     redirect("/login");
   }
-  return session;
+  if (state.status === "stale") {
+    redirect("/api/auth/invalidate-session");
+  }
+  return state.session;
 }
 
 /**
- * Returns the current session or null (does NOT redirect).
+ * Returns the current, database-validated session or null (does NOT redirect).
  * Use in layouts or components where unauthenticated is acceptable.
  */
 export async function getOptionalSession() {
-  return await auth();
+  const state = await loadSessionState();
+  return state.status === "authenticated" ? state.session : null;
 }
 
 /**
@@ -66,8 +126,8 @@ export function isSalesRep(role: UserRole): boolean {
 }
 
 /**
- * Server Action guard — throws if the session role doesn't match.
- * Use at the top of any Server Action that requires authorization.
+ * Server Action guard — throws if the session is stale or the role doesn't
+ * match. Always uses the fresh database role, never the potentially stale JWT.
  *
  * @example
  * export async function createInvoice(data: InvoiceFormData) {
@@ -76,23 +136,23 @@ export function isSalesRep(role: UserRole): boolean {
  * }
  */
 export async function requireRole(allowedRoles: UserRole[]) {
-  const session = await auth();
-  if (!session?.user) {
+  const state = await loadSessionState();
+  if (state.status !== "authenticated") {
     throw new Error("Unauthorized / غير مصرح لك بالقيام بهذا الإجراء");
   }
-  if (!allowedRoles.includes(session.user.role)) {
+  if (!allowedRoles.includes(state.session.user.role)) {
     throw new Error("Unauthorized / غير مصرح لك بالقيام بهذا الإجراء");
   }
-  return session;
+  return state.session;
 }
 
 /**
- * Server Action guard — ensures the user is authenticated.
+ * Server Action guard — ensures the user is authenticated with a fresh session.
  */
 export async function requireAuth() {
-  const session = await auth();
-  if (!session?.user) {
+  const state = await loadSessionState();
+  if (state.status !== "authenticated") {
     throw new Error("Unauthorized / غير مصرح لك بالقيام بهذا الإجراء");
   }
-  return session;
+  return state.session;
 }

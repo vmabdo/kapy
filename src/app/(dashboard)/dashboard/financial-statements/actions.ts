@@ -2,7 +2,8 @@
 
 import { prisma } from "@/lib/prisma";
 import { requireRole } from "@/lib/auth-utils";
-import { resolveProductCost } from "@/lib/costing";
+import { resolveHistoricalCost } from "@/lib/costing";
+import { getZonedMonthRange } from "@/lib/datetime";
 import { InvoiceType, UserRole } from "@prisma/client";
 import {
   getInventoryValuation,
@@ -63,9 +64,7 @@ function roundMoney(value: number): number {
 }
 
 function getPeriodDates(year: number, month: number) {
-  const startDate = new Date(year, month - 1, 1, 0, 0, 0, 0);
-  const endDate = new Date(year, month, 0, 23, 59, 59, 999);
-  return { startDate, endDate };
+  return getZonedMonthRange(year, month);
 }
 
 /**
@@ -86,7 +85,7 @@ async function requireFinancialStatementsAccess() {
 export async function getIncomeStatement(year: number, month: number): Promise<IncomeStatementData> {
   await requireFinancialStatementsAccess();
 
-  const { startDate, endDate } = getPeriodDates(year, month);
+  const { start: startDate, endExclusive: endDate } = getPeriodDates(year, month);
 
   const [
     salesAggregate,
@@ -103,7 +102,7 @@ export async function getIncomeStatement(year: number, month: number): Promise<I
   ] = await Promise.all([
     prisma.invoice.aggregate({
       where: {
-        invoiceDate: { gte: startDate, lte: endDate },
+        invoiceDate: { gte: startDate, lt: endDate },
         // CANCELLED currently means "fully returned". Keep the original
         // invoice revenue here and let the return rows below act as the
         // contra-revenue entry. Excluding it here while also subtracting the
@@ -117,7 +116,7 @@ export async function getIncomeStatement(year: number, month: number): Promise<I
     }),
     prisma.return.aggregate({
       where: {
-        returnDate: { gte: startDate, lte: endDate },
+        returnDate: { gte: startDate, lt: endDate },
         invoice: { isLegacy: false },
       },
       _sum: { totalAmount: true },
@@ -125,33 +124,53 @@ export async function getIncomeStatement(year: number, month: number): Promise<I
     prisma.invoiceItem.findMany({
       where: {
         invoice: {
-          invoiceDate: { gte: startDate, lte: endDate },
+          invoiceDate: { gte: startDate, lt: endDate },
           status: { not: "DRAFT" },
           isLegacy: false,
         },
       },
       select: {
         quantity: true,
+        historicalCost: true,
         product: { select: { costPrice: true, sellingPrice: true } },
       },
     }),
     prisma.returnItem.findMany({
       where: {
         return: {
-          returnDate: { gte: startDate, lte: endDate },
+          returnDate: { gte: startDate, lt: endDate },
           invoice: { isLegacy: false },
         },
       },
       select: {
         quantity: true,
+        productId: true,
         product: { select: { costPrice: true, sellingPrice: true } },
+        return: {
+          select: {
+            invoice: {
+              select: {
+                items: {
+                  select: {
+                    productId: true,
+                    quantity: true,
+                    historicalCost: true,
+                    product: {
+                      select: { costPrice: true, sellingPrice: true },
+                    },
+                  },
+                },
+              },
+            },
+          },
+        },
       },
     }),
     prisma.transaction.aggregate({
       where: {
         category: "REP_SALARY",
         type: "CASH_OUT",
-        transactedAt: { gte: startDate, lte: endDate },
+        transactedAt: { gte: startDate, lt: endDate },
       },
       _sum: { amount: true },
     }),
@@ -159,7 +178,7 @@ export async function getIncomeStatement(year: number, month: number): Promise<I
       where: {
         category: "REP_BONUS",
         type: "CASH_OUT",
-        transactedAt: { gte: startDate, lte: endDate },
+        transactedAt: { gte: startDate, lt: endDate },
       },
       _sum: { amount: true },
     }),
@@ -167,7 +186,7 @@ export async function getIncomeStatement(year: number, month: number): Promise<I
       where: {
         category: "REP_DEDUCTION",
         type: "CASH_OUT",
-        transactedAt: { gte: startDate, lte: endDate },
+        transactedAt: { gte: startDate, lt: endDate },
       },
       _sum: { amount: true },
     }),
@@ -175,7 +194,7 @@ export async function getIncomeStatement(year: number, month: number): Promise<I
       where: {
         category: { in: ["OPERATING_EXPENSE", "WAREHOUSE_EXPENSE", "OTHER"] },
         type: "CASH_OUT",
-        transactedAt: { gte: startDate, lte: endDate },
+        transactedAt: { gte: startDate, lt: endDate },
       },
       _sum: { amount: true },
     }),
@@ -195,14 +214,35 @@ export async function getIncomeStatement(year: number, month: number): Promise<I
 
   const originalCogs = invoiceItemsWithCost.reduce(
     (sum, item) =>
-      sum + Number(item.quantity) * resolveProductCost(item.product),
+      sum +
+      Number(item.quantity) *
+        resolveHistoricalCost(item, item.product),
     0
   );
-  const returnedCogs = returnedItemsWithCost.reduce(
-    (sum, item) =>
-      sum + Number(item.quantity) * resolveProductCost(item.product),
-    0
-  );
+  const returnedCogs = returnedItemsWithCost.reduce((sum, returnedItem) => {
+    const invoiceItems = returnedItem.return.invoice.items.filter(
+      (item) => item.productId === returnedItem.productId
+    );
+
+    const invoiceQuantity = invoiceItems.reduce(
+      (total, item) => total + Number(item.quantity),
+      0
+    );
+    const invoiceCostValue = invoiceItems.reduce(
+      (total, item) =>
+        total +
+        Number(item.quantity) *
+          resolveHistoricalCost(item, item.product),
+      0
+    );
+
+    const historicalUnitCost =
+      invoiceQuantity > 0
+        ? invoiceCostValue / invoiceQuantity
+        : resolveHistoricalCost({}, returnedItem.product);
+
+    return sum + Number(returnedItem.quantity) * historicalUnitCost;
+  }, 0);
   const cogs = roundMoney(originalCogs - returnedCogs);
 
   const grossProfit = roundMoney(netRevenue - cogs);
@@ -296,7 +336,7 @@ export async function getBalanceSheet(): Promise<BalanceSheetData> {
 export async function getCashFlowStatement(year: number, month: number): Promise<CashFlowData> {
   await requireFinancialStatementsAccess();
 
-  const { startDate, endDate } = getPeriodDates(year, month);
+  const { start: startDate, endExclusive: endDate } = getPeriodDates(year, month);
 
   const [
     inboundTransactions,
@@ -308,7 +348,7 @@ export async function getCashFlowStatement(year: number, month: number): Promise
     prisma.transaction.findMany({
       where: {
         type: { in: ["CASH_IN", "TRANSFER_IN"] },
-        transactedAt: { gte: startDate, lte: endDate },
+        transactedAt: { gte: startDate, lt: endDate },
       },
       select: {
         type: true,
@@ -322,19 +362,19 @@ export async function getCashFlowStatement(year: number, month: number): Promise
       },
     }),
     prisma.transaction.aggregate({
-      where: { type: "CASH_OUT", category: "SUPPLIER_PAYMENT", transactedAt: { gte: startDate, lte: endDate } },
+      where: { type: "CASH_OUT", category: "SUPPLIER_PAYMENT", transactedAt: { gte: startDate, lt: endDate } },
       _sum: { amount: true },
     }),
     prisma.transaction.aggregate({
-      where: { type: "CASH_OUT", category: { in: ["REP_SALARY", "REP_BONUS"] }, transactedAt: { gte: startDate, lte: endDate } },
+      where: { type: "CASH_OUT", category: { in: ["REP_SALARY", "REP_BONUS"] }, transactedAt: { gte: startDate, lt: endDate } },
       _sum: { amount: true },
     }),
     prisma.transaction.aggregate({
-      where: { type: "CASH_OUT", category: { in: ["OPERATING_EXPENSE", "WAREHOUSE_EXPENSE"] }, transactedAt: { gte: startDate, lte: endDate } },
+      where: { type: "CASH_OUT", category: { in: ["OPERATING_EXPENSE", "WAREHOUSE_EXPENSE"] }, transactedAt: { gte: startDate, lt: endDate } },
       _sum: { amount: true },
     }),
     prisma.transaction.aggregate({
-      where: { type: { in: ["CASH_OUT", "TRANSFER_OUT"] }, category: { in: ["REP_DEDUCTION", "OTHER"] }, transactedAt: { gte: startDate, lte: endDate } },
+      where: { type: { in: ["CASH_OUT", "TRANSFER_OUT"] }, category: { in: ["REP_DEDUCTION", "OTHER"] }, transactedAt: { gte: startDate, lt: endDate } },
       _sum: { amount: true },
     }),
   ]);

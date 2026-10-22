@@ -4,6 +4,7 @@ import { notFound } from "next/navigation";
 import { getSalesRepById } from "@/queries/sales";
 import { prisma } from "@/lib/prisma";
 import { formatCurrency, formatDate, cn } from "@/lib/utils";
+import { getZonedMonthRange, getZonedYearMonth } from "@/lib/datetime";
 import {
   Users, ArrowRight, Phone, MapPin, Calendar, Target,
   TrendingUp, FileText, Gift, Minus, DollarSign, AlertTriangle,
@@ -21,16 +22,18 @@ export default async function RepDetailPage({ params }: { params: { id: string }
   const rep = await getSalesRepById(params.id);
   if (!rep) notFound();
 
-  const now = new Date();
-  const currentYear = now.getFullYear();
-  const currentMonth = now.getMonth() + 1;
+  const currentPeriod = getZonedYearMonth(new Date());
+  const currentYear = currentPeriod.year;
+  const currentMonth = currentPeriod.month;
+  const { start: startOfMonth, endExclusive: endOfMonth } =
+    getZonedMonthRange(currentYear, currentMonth);
 
   // Financial data for current month
   const [monthInvoices, bonuses, deductions, targetPeriod] = await Promise.all([
     prisma.invoice.aggregate({
       where: {
         salesRepId: rep.id,
-        invoiceDate: { gte: new Date(currentYear, currentMonth - 1, 1) },
+        invoiceDate: { gte: startOfMonth, lt: endOfMonth },
       },
       _sum: { total: true },
       _count: true,
@@ -141,7 +144,7 @@ export default async function RepDetailPage({ params }: { params: { id: string }
             أداء الشهر الحالي
           </h2>
           <div className="text-xs text-muted-foreground">
-            {formatDate(now, "ar-EG", { year: "numeric", month: "long", day: undefined })}
+            {formatDate(startOfMonth, "ar-EG", { year: "numeric", month: "long", day: undefined })}
           </div>
         </div>
 

@@ -14,11 +14,17 @@ import {
   TransactionCategory,
 } from "@prisma/client";
 import { z } from "zod";
-import { addDays, format } from "date-fns";
+import { addDays } from "date-fns";
 import { calculateDiscountAmount } from "@/lib/utils";
+import {
+  getZonedDateKey,
+  getZonedMonthRange,
+  getZonedYearMonth,
+} from "@/lib/datetime";
 import { getSystemSettings } from "@/queries/settings";
 import { decrementStockOrThrow } from "@/lib/stock";
 import { getOrCreateTreasury } from "@/lib/treasury";
+import { resolveProductCost } from "@/lib/costing";
 
 // ─── Schemas ──────────────────────────────────────────────────
 
@@ -205,12 +211,13 @@ async function reverseStoredRepTargetProgress(
 ) {
   if (quantityByProduct.size === 0) return;
 
+  const paymentPeriod = getZonedYearMonth(paymentDate);
   const target = await tx.repMonthlyTarget.findUnique({
     where: {
       salesRepId_month_year: {
         salesRepId,
-        month: paymentDate.getMonth() + 1,
-        year: paymentDate.getFullYear(),
+        month: paymentPeriod.month,
+        year: paymentPeriod.year,
       },
     },
     include: { items: true },
@@ -340,7 +347,7 @@ export async function createInvoice(
   formData: z.infer<typeof CreateInvoiceSchema>
 ): Promise<ActionResult<{ id: string }>> {
   try {
-    await requireRole([
+    const session = await requireRole([
       UserRole.SUPER_ADMIN,
       UserRole.ADMIN,
       UserRole.SALES_MANAGER,
@@ -348,6 +355,18 @@ export async function createInvoice(
     ]);
 
     const data = CreateInvoiceSchema.parse(formData);
+
+    // Sales reps can only issue standard invoices for their own rep profile.
+    // Never trust the posted salesRepId or allow legacy-debt creation here.
+    if (session.user.role === UserRole.SALES_REP) {
+      if (data.isLegacy) {
+        throw new Error("غير مصرح للمندوب بإنشاء فواتير مديونية سابقة");
+      }
+      if (!session.user.salesRepId) {
+        throw new Error("حساب المندوب غير مرتبط بملف مندوب");
+      }
+      data.salesRepId = session.user.salesRepId;
+    }
 
     // If legacy, strictly force items to []
     if (data.isLegacy) {
@@ -367,7 +386,8 @@ export async function createInvoice(
     }
 
     // Build invoice number: INV-YYYYMMDD-{manualNumber}
-    const today = format(new Date(), "yyyyMMdd");
+    // Use the Cairo calendar date, not the server's UTC date.
+    const today = getZonedDateKey(new Date()).replaceAll("-", "");
     const invoiceNumber = `INV-${today}-${data.manualNumber}`;
 
     // Check invoice number uniqueness
@@ -464,6 +484,7 @@ export async function createInvoice(
               name: true,
               isActive: true,
               sellingPrice: true,
+              costPrice: true,
             },
           });
       const productMap = new Map(
@@ -481,6 +502,7 @@ export async function createInvoice(
         bonusQuantity: number;
         unitPrice: number;
         discountedUnitPrice: number;
+        historicalCost: number;
       }> = [];
       let serverUpfrontItems: Array<{
         productId: string;
@@ -513,6 +535,8 @@ export async function createInvoice(
             quantity: requested.quantity,
             bonusQuantity: requested.bonusQuantity,
             unitPrice,
+            // Immutable snapshot for historical COGS.
+            historicalCost: resolveProductCost(product),
           };
         });
 
@@ -661,6 +685,7 @@ export async function createInvoice(
                 unitPrice: item.unitPrice,
                 discountedUnitPrice: item.discountedUnitPrice,
                 lineTotal: roundMoney(item.quantity * item.unitPrice),
+                historicalCost: roundMoney(item.historicalCost),
               })),
             },
           }),
@@ -697,6 +722,8 @@ export async function createInvoice(
               create: serverItems.map((item) => ({
                 productId: item.productId,
                 quantity: item.quantity + item.bonusQuantity,
+                unitCost: roundMoney(item.historicalCost),
+                historicalCost: roundMoney(item.historicalCost),
               })),
             },
           },
@@ -730,13 +757,13 @@ export async function createInvoice(
 
           // 4.2 Update Rep Monthly Target achieved quantities on upfront payment
           if (!data.isLegacy && data.salesRepId) {
-            const now = new Date();
+            const currentPeriod = getZonedYearMonth(new Date());
             const repMonthlyTarget = await tx.repMonthlyTarget.findUnique({
               where: {
                 salesRepId_month_year: {
                   salesRepId: data.salesRepId,
-                  month: now.getMonth() + 1,
-                  year: now.getFullYear(),
+                  month: currentPeriod.month,
+                  year: currentPeriod.year,
                 },
               },
               include: { items: true },
@@ -789,12 +816,12 @@ export async function createInvoice(
 
       // 6. Update Pharmacy Target Progress
       if (!data.isLegacy) {
-        const currentMonth = new Date();
+        const currentPeriod = getZonedYearMonth(new Date());
         const targetPeriod = await tx.pharmacyTargetPeriod.findFirst({
           where: {
             pharmacyId: data.pharmacyId,
-            periodYear: currentMonth.getFullYear(),
-            periodMonth: currentMonth.getMonth() + 1,
+            periodYear: currentPeriod.year,
+            periodMonth: currentPeriod.month,
           },
         });
 
@@ -1142,12 +1169,13 @@ export async function recordInvoicePayment(
         // 4. Update Rep Monthly Target achievedQuantity based on paid quantities
         // Targets are updated on PAYMENT, not on invoice creation
         if (invoice.salesRepId) {
+          const currentPeriod = getZonedYearMonth(new Date());
           const repMonthlyTarget = await tx.repMonthlyTarget.findUnique({
             where: {
               salesRepId_month_year: {
                 salesRepId: invoice.salesRepId,
-                month: new Date().getMonth() + 1,
-                year: new Date().getFullYear(),
+                month: currentPeriod.month,
+                year: currentPeriod.year,
               },
             },
             include: { items: true },
@@ -1196,14 +1224,13 @@ export async function recordInvoicePayment(
         });
 
         // Update Rep Monthly Target achievedQuantity from legacy target items
-        const currentMonth = new Date().getMonth() + 1;
-        const currentYear = new Date().getFullYear();
+        const currentPeriod = getZonedYearMonth(new Date());
         const legacyRepTarget = await tx.repMonthlyTarget.findUnique({
           where: {
             salesRepId_month_year: {
               salesRepId: repId,
-              month: currentMonth,
-              year: currentYear,
+              month: currentPeriod.month,
+              year: currentPeriod.year,
             },
           },
           include: { items: true },
@@ -1609,11 +1636,12 @@ export async function deleteInvoice(invoiceId: string): Promise<ActionResult> {
       // Invoice creation only updates an existing target period, so a missing
       // period means there is nothing to reverse.
       if (!invoice.isLegacy) {
+        const invoicePeriod = getZonedYearMonth(invoice.createdAt);
         const targetPeriod = await tx.pharmacyTargetPeriod.findFirst({
           where: {
             pharmacyId: invoice.pharmacyId,
-            periodYear: invoice.createdAt.getFullYear(),
-            periodMonth: invoice.createdAt.getMonth() + 1,
+            periodYear: invoicePeriod.year,
+            periodMonth: invoicePeriod.month,
           },
         });
 
@@ -1797,7 +1825,13 @@ export async function getRepMonthlyTarget(
   month: number,
   year: number
 ) {
-  await requireAuth();
+  const session = await requireAuth();
+  if (
+    session.user.role === UserRole.SALES_REP &&
+    salesRepId !== session.user.salesRepId
+  ) {
+    throw new Error("Unauthorized / غير مصرح لك بالقيام بهذا الإجراء");
+  }
   return prisma.repMonthlyTarget.findUnique({
     where: { salesRepId_month_year: { salesRepId, month, year } },
     include: {
@@ -1821,9 +1855,15 @@ export async function getSalesRepTargetAchievements(
   month: number,
   year: number
 ) {
-  await requireAuth();
-  const startOfMonth = new Date(year, month - 1, 1);
-  const endOfMonth = new Date(year, month, 1);
+  const session = await requireAuth();
+  if (
+    session.user.role === UserRole.SALES_REP &&
+    salesRepId !== session.user.salesRepId
+  ) {
+    throw new Error("Unauthorized / غير مصرح لك بالقيام بهذا الإجراء");
+  }
+  const { start: startOfMonth, endExclusive: endOfMonth } =
+    getZonedMonthRange(year, month);
 
   // 1. Regular invoice payments
   const regularPayments = await prisma.payment.findMany({
@@ -1831,7 +1871,7 @@ export async function getSalesRepTargetAchievements(
       invoice: {
         salesRepId,
         isLegacy: false,
-        invoiceDate: { gte: startOfMonth },
+        invoiceDate: { gte: startOfMonth, lt: endOfMonth },
       },
       paidAt: { gte: startOfMonth, lt: endOfMonth },
     },

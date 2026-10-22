@@ -50,6 +50,7 @@ export const { handlers, signIn, signOut, auth } = NextAuth({
             passwordHash: true,
             role: true,
             isActive: true,
+            sessionVersion: true,
             salesRep: {
               select: { id: true },
             },
@@ -68,6 +69,7 @@ export const { handlers, signIn, signOut, auth } = NextAuth({
           name: user.name,
           role: user.role,
           salesRepId: user.salesRep?.id ?? null,
+          sessionVersion: user.sessionVersion,
         };
       },
     }),
@@ -75,8 +77,11 @@ export const { handlers, signIn, signOut, auth } = NextAuth({
   callbacks: {
     /**
      * jwt callback — called when JWT is created or updated.
-     * We persist extra fields (role, salesRepId) into the token
-     * so they are always available server-side without a DB call.
+     * We persist extra fields (role, salesRepId, sessionVersion) into the
+     * token. `sessionVersion` is checked against the database by
+     * `loadSessionState()` in auth-utils on every dashboard layout / protected
+     * action, which invalidates tokens issued before a password change or
+     * account disabling.
      */
     async jwt({ token, user }) {
       if (user) {
@@ -84,6 +89,8 @@ export const { handlers, signIn, signOut, auth } = NextAuth({
         token.id = user.id as string;
         token.role = (user as { role: UserRole }).role;
         token.salesRepId = (user as { salesRepId: string | null }).salesRepId;
+        token.sessionVersion =
+          (user as { sessionVersion?: number }).sessionVersion ?? 0;
       }
       return token;
     },
@@ -96,6 +103,7 @@ export const { handlers, signIn, signOut, auth } = NextAuth({
         session.user.id = token.id as string;
         session.user.role = token.role as UserRole;
         session.user.salesRepId = (token.salesRepId as string | null) ?? null;
+        session.user.sessionVersion = Number(token.sessionVersion ?? -1);
       }
       return session;
     },

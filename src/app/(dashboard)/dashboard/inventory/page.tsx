@@ -16,6 +16,7 @@ import { getAllWarehouses, getLowStockItems } from "@/queries/inventory";
 import { getInventoryFinancialSummary } from "@/queries/stock-financials";
 import { WarehouseType } from "@prisma/client";
 import { cn, formatCurrency, formatNumber } from "@/lib/utils";
+import { getZonedMonthRange, getZonedYearMonth } from "@/lib/datetime";
 import { SupplierDialog } from "@/components/inventory/supplier-dialog";
 
 export const metadata: Metadata = { title: "إدارة المخازن" };
@@ -24,17 +25,9 @@ export const metadata: Metadata = { title: "إدارة المخازن" };
 export const dynamic = "force-dynamic";
 
 export default async function InventoryPage() {
-  const now = new Date();
-  const startOfMonth = new Date(now.getFullYear(), now.getMonth(), 1);
-  const endOfMonth = new Date(
-    now.getFullYear(),
-    now.getMonth() + 1,
-    0,
-    23,
-    59,
-    59,
-    999
-  );
+  const currentPeriod = getZonedYearMonth(new Date());
+  const { start: startOfMonth, endExclusive: endOfMonth } =
+    getZonedMonthRange(currentPeriod.year, currentPeriod.month);
 
   const [warehouses, lowStockItems, inventoryFinancials] = await Promise.all([
     getAllWarehouses(),

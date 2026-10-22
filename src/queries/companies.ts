@@ -1,5 +1,6 @@
 import { prisma } from "@/lib/prisma";
 import { ClientType } from "@prisma/client";
+import { getZonedYearMonth } from "@/lib/datetime";
 
 // ─── External Companies / Warehouses ───────────────────────────────
 
@@ -22,9 +23,9 @@ export async function getCompanies(filters?: { governorateId?: string; salesRepI
 }
 
 export async function getCompanyById(id: string) {
-  const now = new Date();
-  const year = now.getFullYear();
-  const month = now.getMonth() + 1;
+  const currentPeriod = getZonedYearMonth(new Date());
+  const year = currentPeriod.year;
+  const month = currentPeriod.month;
 
   return prisma.pharmacy.findFirst({
     where: { 

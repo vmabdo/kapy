@@ -3,6 +3,7 @@
 import { useRouter, usePathname, useSearchParams } from "next/navigation";
 import { useCallback } from "react";
 import { ChevronLeft, ChevronRight, Calendar } from "lucide-react";
+import { getZonedYearMonth } from "@/lib/datetime";
 
 const MONTHS_AR = [
   "يناير", "فبراير", "مارس", "أبريل", "مايو", "يونيو",
@@ -36,8 +37,9 @@ export function PeriodPicker({ year, month }: PeriodPickerProps) {
     else navigate(year, month + 1);
   };
 
-  const currentYear = new Date().getFullYear();
-  const currentMonth = new Date().getMonth() + 1;
+  const currentPeriod = getZonedYearMonth(new Date());
+  const currentYear = currentPeriod.year;
+  const currentMonth = currentPeriod.month;
   const isCurrentPeriod = year === currentYear && month === currentMonth;
 
   return (

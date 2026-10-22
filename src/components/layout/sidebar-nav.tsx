@@ -75,6 +75,7 @@ const NAV_ITEMS: NavItem[] = [
       UserRole.ADMIN,
       UserRole.SALES_MANAGER,
       UserRole.ACCOUNTANT,
+      UserRole.SALES_REP,
     ],
   },
   {

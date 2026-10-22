@@ -8,6 +8,7 @@ import { z } from "zod";
 import { setRepMonthlyTarget } from "@/actions/sales";
 import { Target, Plus, Trash2, Loader2, CheckCircle2, Package } from "lucide-react";
 import { cn } from "@/lib/utils";
+import { getZonedYearMonth } from "@/lib/datetime";
 
 interface Product {
   id: string;
@@ -54,13 +55,12 @@ const Schema = z.object({
 
 type FormData = z.input<typeof Schema>;
 
-const now = new Date();
-
 export function RepMonthlyTargetForm({ salesRepId, products, existingTarget }: Props) {
   const router = useRouter();
   const [isPending, startTransition] = useTransition();
   const [serverError, setServerError] = useState<string | null>(null);
   const [successMsg, setSuccessMsg] = useState<string | null>(null);
+  const currentPeriod = getZonedYearMonth(new Date());
 
   const {
     register,
@@ -72,8 +72,8 @@ export function RepMonthlyTargetForm({ salesRepId, products, existingTarget }: P
     resolver: zodResolver(Schema),
     defaultValues: {
       salesRepId,
-      month: existingTarget?.month ?? now.getMonth() + 1,
-      year: existingTarget?.year ?? now.getFullYear(),
+      month: existingTarget?.month ?? currentPeriod.month,
+      year: existingTarget?.year ?? currentPeriod.year,
       notes: existingTarget?.notes ?? "",
       items: existingTarget?.items.map((i) => ({
         productId: i.productId,

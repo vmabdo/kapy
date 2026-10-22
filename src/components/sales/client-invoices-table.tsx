@@ -5,6 +5,13 @@ import Link from "next/link";
 import { CalendarDays, FileText, Search, X } from "lucide-react";
 import { InvoiceType } from "@prisma/client";
 import { cn, formatCurrency, formatDate } from "@/lib/utils";
+import {
+  getZonedDateKeysForLastDays,
+  getZonedDayRange,
+  getZonedMonthRange,
+  getZonedYearMonth,
+  parseDateInputToZonedStart,
+} from "@/lib/datetime";
 import type { ClientInvoiceRow } from "@/lib/invoice-rows";
 
 type DatePreset = "all" | "today" | "last7" | "month" | "custom";
@@ -24,50 +31,37 @@ const TYPE_LABELS: Record<InvoiceType, string> = {
 const inputClass =
   "h-10 w-full rounded-xl border border-border bg-background px-3 text-sm focus:outline-none focus:ring-2 focus:ring-primary/30 transition-all";
 
-function startOfDay(date: Date) {
-  return new Date(date.getFullYear(), date.getMonth(), date.getDate());
-}
-
-function endOfDay(date: Date) {
-  return new Date(
-    date.getFullYear(),
-    date.getMonth(),
-    date.getDate(),
-    23,
-    59,
-    59,
-    999
-  );
-}
-
-function parseInputDate(value: string, end = false): Date | null {
+/**
+ * Local date filtering uses explicit Africa/Cairo boundaries so results do not
+ * change with the browser's or server's timezone.
+ */
+function parseInputDate(value: string, endExclusive = false): Date | null {
   if (!value) return null;
-  const [year, month, day] = value.split("-").map(Number);
-  if (!year || !month || !day) return null;
-  const date = new Date(year, month - 1, day);
-  return end ? endOfDay(date) : startOfDay(date);
+  const start = parseDateInputToZonedStart(value);
+  if (!start) return null;
+  return endExclusive ? getZonedDayRange(start).endExclusive : start;
 }
 
 function getDateRange(preset: DatePreset, fromDate: string, toDate: string) {
   if (preset === "all") return { from: null, to: null };
 
   const now = new Date();
+  const today = getZonedDayRange(now);
 
   if (preset === "today") {
-    return { from: startOfDay(now), to: endOfDay(now) };
+    return { from: today.start, to: today.endExclusive };
   }
 
   if (preset === "last7") {
-    const from = startOfDay(now);
-    from.setDate(from.getDate() - 6);
-    return { from, to: endOfDay(now) };
+    const firstKey = getZonedDateKeysForLastDays(7, now)[0];
+    const from = parseDateInputToZonedStart(firstKey);
+    return { from, to: today.endExclusive };
   }
 
   if (preset === "month") {
-    return {
-      from: new Date(now.getFullYear(), now.getMonth(), 1),
-      to: endOfDay(now),
-    };
+    const currentPeriod = getZonedYearMonth(now);
+    const range = getZonedMonthRange(currentPeriod.year, currentPeriod.month);
+    return { from: range.start, to: range.endExclusive };
   }
 
   return {
@@ -107,7 +101,7 @@ export function ClientInvoicesTable({ invoices }: Props) {
         const time = new Date(invoice.invoiceDate).getTime();
         if (Number.isNaN(time)) return false;
         if (fromTime !== null && time < fromTime) return false;
-        if (toTime !== null && time > toTime) return false;
+        if (toTime !== null && time >= toTime) return false;
       }
 
       return true;

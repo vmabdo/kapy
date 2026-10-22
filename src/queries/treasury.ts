@@ -1,6 +1,7 @@
 import { prisma } from "@/lib/prisma";
 import { getOrCreateTreasury } from "@/lib/treasury";
 import { TransactionType } from "@prisma/client";
+import { getZonedDayRange } from "@/lib/datetime";
 
 // ─── Treasury ─────────────────────────────────────────────────
 
@@ -80,16 +81,21 @@ export async function getTransactions(filters?: { type?: TransactionType; take?:
 export async function getTreasuryStats() {
   const treasury = await getTreasury();
   
-  const today = new Date();
-  today.setHours(0, 0, 0, 0);
+  const { start: today, endExclusive: tomorrow } = getZonedDayRange(new Date());
 
   const [todayIn, todayOut] = await Promise.all([
     prisma.transaction.aggregate({
-      where: { type: TransactionType.CASH_IN, transactedAt: { gte: today } },
+      where: {
+        type: TransactionType.CASH_IN,
+        transactedAt: { gte: today, lt: tomorrow },
+      },
       _sum: { amount: true },
     }),
     prisma.transaction.aggregate({
-      where: { type: TransactionType.CASH_OUT, transactedAt: { gte: today } },
+      where: {
+        type: TransactionType.CASH_OUT,
+        transactedAt: { gte: today, lt: tomorrow },
+      },
       _sum: { amount: true },
     }),
   ]);

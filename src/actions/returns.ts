@@ -5,6 +5,8 @@ import { prisma } from "@/lib/prisma";
 import { requireRole } from "@/lib/auth-utils";
 import { decrementStockOrThrow } from "@/lib/stock";
 import { getOrCreateTreasury } from "@/lib/treasury";
+import { resolveHistoricalCost, resolveProductCost } from "@/lib/costing";
+import { getZonedYearMonth } from "@/lib/datetime";
 import { revalidatePath } from "next/cache";
 import {
   InvoiceStatus,
@@ -119,7 +121,13 @@ export async function processInvoiceReturn(
       const invoice = await tx.invoice.findUniqueOrThrow({
         where: { id: data.invoiceId },
         include: {
-          items: true,
+          items: {
+            include: {
+              product: {
+                select: { costPrice: true, sellingPrice: true },
+              },
+            },
+          },
           pharmacy: { select: { governorateId: true, name: true } },
         },
       });
@@ -142,9 +150,10 @@ export async function processInvoiceReturn(
         subWarehouse ??
         (await tx.warehouse.findFirst({ where: { type: "MAIN" } }));
 
-      // Generate Return Number
+      // Generate Return Number using the Cairo business calendar month.
+      const currentPeriod = getZonedYearMonth(new Date());
       const returnCount = await tx.return.count();
-      const returnNumber = `RET-${new Date().getFullYear()}${String(new Date().getMonth() + 1).padStart(2, "0")}-${returnCount + 1}`;
+      const returnNumber = `RET-${currentPeriod.year}${String(currentPeriod.month).padStart(2, "0")}-${returnCount + 1}`;
 
       // ══════════════════════════════════════════════════════════════
       // LEGACY INVOICE RETURN FLOW
@@ -209,6 +218,16 @@ export async function processInvoiceReturn(
         // 2. INCREASE stock in pharmacy's governorate warehouse
         // LEGACY returns go back into the client's governorate warehouse
         if (targetWarehouse) {
+          const legacyProducts = await tx.product.findMany({
+            where: {
+              id: { in: legacyItems.map((item) => item.productId) },
+            },
+            select: { id: true, costPrice: true, sellingPrice: true },
+          });
+          const legacyProductMap = new Map(
+            legacyProducts.map((product) => [product.id, product])
+          );
+
           for (const item of legacyItems) {
             await tx.stockItem.upsert({
               where: {
@@ -236,10 +255,17 @@ export async function processInvoiceReturn(
               targetWarehouseId: targetWarehouse.id,
               notes: `مرتجع مديونية سابقة رقم ${returnNumber} من ${invoice.pharmacy.name}`,
               items: {
-                create: legacyItems.map((item) => ({
-                  productId: item.productId,
-                  quantity: item.quantity,
-                })),
+                create: legacyItems.map((item) => {
+                  const historicalCost = resolveProductCost(
+                    legacyProductMap.get(item.productId)
+                  );
+                  return {
+                    productId: item.productId,
+                    quantity: item.quantity,
+                    unitCost: roundMoney(historicalCost),
+                    historicalCost: roundMoney(historicalCost),
+                  };
+                }),
               },
             },
           });
@@ -336,7 +362,7 @@ export async function processInvoiceReturn(
 
       const invoiceItemsByProduct = new Map<
         string,
-        { quantity: number; netValue: number }
+        { quantity: number; netValue: number; costValue: number }
       >();
       for (const item of invoice.items) {
         const quantity = Number(item.quantity);
@@ -351,7 +377,22 @@ export async function processInvoiceReturn(
           quantity: (existing?.quantity ?? 0) + quantity,
           netValue:
             (existing?.netValue ?? 0) + quantity * effectiveUnitPrice,
+          costValue:
+            (existing?.costValue ?? 0) +
+            quantity * resolveHistoricalCost(item, item.product),
         });
+      }
+
+      // Snapshot the invoice's historical cost on the return movement so the
+      // inventory ledger never depends on Product.costPrice at deletion time.
+      const historicalUnitCostByProduct = new Map<string, number>();
+      for (const [productId, item] of Array.from(
+        invoiceItemsByProduct.entries()
+      )) {
+        historicalUnitCostByProduct.set(
+          productId,
+          item.quantity > 0 ? item.costValue / item.quantity : 0
+        );
       }
 
       // Aggregate the request as well: two rows for the same product must not
@@ -449,10 +490,16 @@ export async function processInvoiceReturn(
             targetWarehouseId: targetWarehouse.id,
             notes: `مرتجع رقم ${returnNumber} من ${invoice.pharmacy.name}`,
             items: {
-              create: returnItemsData.map((item) => ({
-                productId: item.productId,
-                quantity: item.quantity,
-              })),
+              create: returnItemsData.map((item) => {
+                const historicalCost =
+                  historicalUnitCostByProduct.get(item.productId) ?? 0;
+                return {
+                  productId: item.productId,
+                  quantity: item.quantity,
+                  unitCost: roundMoney(historicalCost),
+                  historicalCost: roundMoney(historicalCost),
+                };
+              }),
             },
           },
         });

@@ -13,6 +13,10 @@ import {
   MapPin,
 } from "lucide-react";
 import { formatCurrency, formatDate, cn } from "@/lib/utils";
+import {
+  getZonedMonthRange,
+  getZonedYearMonth,
+} from "@/lib/datetime";
 import { Suspense } from "react";
 import { Skeleton } from "@/components/ui/skeleton";
 import { PrintButton } from "../../sales/[id]/print-button";
@@ -30,21 +34,26 @@ interface PageProps {
 
 export default async function MonthlyReportPage({ searchParams }: PageProps) {
   const params = await searchParams;
-  const now = new Date();
+  const currentPeriod = getZonedYearMonth(new Date());
 
-  const year = params.year ? parseInt(params.year) : now.getFullYear();
-  const month = params.month ? parseInt(params.month) : now.getMonth() + 1;
+  const year = params.year ? parseInt(params.year) : currentPeriod.year;
+  const month = params.month ? parseInt(params.month) : currentPeriod.month;
   const selectedGovernorateId = params.governorateId || "";
 
-  // Compute date bounds for selected month
-  const startOfMonth = new Date(year, month - 1, 1);
-  const endOfMonth = new Date(year, month, 0, 23, 59, 59);
+  // Compute Africa/Cairo month boundaries as explicit UTC instants. `end` is
+  // exclusive (start of the following local month).
+  const { start: startOfMonth, endExclusive: endOfMonth } = getZonedMonthRange(
+    year,
+    month
+  );
 
   // Previous Month bounds
   const prevYear = month === 1 ? year - 1 : year;
   const prevMonth = month === 1 ? 12 : month - 1;
-  const startOfPrevMonth = new Date(prevYear, prevMonth - 1, 1);
-  const endOfPrevMonth = new Date(prevYear, prevMonth, 0, 23, 59, 59);
+  const {
+    start: startOfPrevMonth,
+    endExclusive: endOfPrevMonth,
+  } = getZonedMonthRange(prevYear, prevMonth);
 
   // ── Fetch all governorates for filter ──
   const governorates = await prisma.governorate.findMany({
@@ -114,7 +123,7 @@ export default async function MonthlyReportPage({ searchParams }: PageProps) {
               defaultValue={year}
               className="px-3 py-2 rounded-lg border border-border bg-background text-sm focus:outline-none focus:ring-2 focus:ring-primary/30"
             >
-              {[now.getFullYear() - 1, now.getFullYear(), now.getFullYear() + 1].map(
+              {[currentPeriod.year - 1, currentPeriod.year, currentPeriod.year + 1].map(
                 (y) => (
                   <option key={y} value={y}>
                     {y}
@@ -242,7 +251,7 @@ async function MonthlyReportContent({
       // Current Month Invoices
       prisma.invoice.findMany({
         where: {
-          invoiceDate: { gte: startOfMonth, lte: endOfMonth },
+          invoiceDate: { gte: startOfMonth, lt: endOfMonth },
           status: { not: "DRAFT" },
           isLegacy: false,
           ...(selectedGovernorateId
@@ -261,7 +270,7 @@ async function MonthlyReportContent({
       // Previous Month Invoices
       prisma.invoice.findMany({
         where: {
-          invoiceDate: { gte: startOfPrevMonth, lte: endOfPrevMonth },
+          invoiceDate: { gte: startOfPrevMonth, lt: endOfPrevMonth },
           status: { not: "DRAFT" },
           isLegacy: false,
           ...(selectedGovernorateId
@@ -287,7 +296,7 @@ async function MonthlyReportContent({
       // Returns for the month
       prisma.return.findMany({
         where: {
-          returnDate: { gte: startOfMonth, lte: endOfMonth },
+          returnDate: { gte: startOfMonth, lt: endOfMonth },
           ...(selectedGovernorateId
             ? { pharmacy: { governorateId: selectedGovernorateId } }
             : {}),
@@ -810,7 +819,7 @@ async function MonthlyReportContent({
                       className="bg-card print:break-inside-avoid"
                     >
                       <td className="px-4 py-3 text-muted-foreground text-xs">
-                        {ret.returnDate.toLocaleDateString("ar-EG")}
+                        {formatDate(ret.returnDate)}
                       </td>
                       <td className="px-4 py-3 font-semibold text-foreground">
                         {ret.pharmacy.name}

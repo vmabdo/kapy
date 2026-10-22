@@ -32,6 +32,7 @@ function LoginForm() {
 
   const callbackUrl = searchParams.get("callbackUrl") ?? "/dashboard";
   const urlError = searchParams.get("error");
+  const sessionExpired = searchParams.get("session") === "expired";
 
   const {
     register,
@@ -78,7 +79,7 @@ function LoginForm() {
         </h2>
 
         {/* URL Error (e.g., expired session) */}
-        {urlError && (
+        {(urlError || sessionExpired) && (
           <div className="mb-4 p-3 rounded-lg bg-red-500/10 border border-red-500/30 text-red-300 text-sm text-center">
             انتهت جلستك، يرجى تسجيل الدخول مرة أخرى
           </div>

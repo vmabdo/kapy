@@ -2,9 +2,19 @@ import type { Metadata } from "next";
 import Link from "next/link";
 import { getInvoices, getSalesStats, getAllSalesReps } from "@/queries/sales";
 import { prisma } from "@/lib/prisma";
+import {
+  getZonedDayRange,
+  parseDateInputToZonedStart,
+} from "@/lib/datetime";
 import { ShoppingCart, Plus } from "lucide-react";
 import { formatCurrency, formatDate } from "@/lib/utils";
-import { ClientType, InvoiceStatus, InvoiceType } from "@prisma/client";
+import {
+  ClientType,
+  InvoiceStatus,
+  InvoiceType,
+  UserRole,
+} from "@prisma/client";
+import { getRequiredSession } from "@/lib/auth-utils";
 import { InvoicesList } from "@/components/sales/invoices-list";
 
 export const metadata: Metadata = { title: "المبيعات والفواتير" };
@@ -22,6 +32,24 @@ interface PageProps {
 }
 
 export default async function SalesPage({ searchParams }: PageProps) {
+  const session = await getRequiredSession();
+  const isSalesRep = session.user.role === UserRole.SALES_REP;
+  // Sales reps may only see their own invoices. A rep without a linked
+  // SalesRep profile gets an impossible ID so no company-wide rows leak.
+  const forcedSalesRepId = isSalesRep
+    ? session.user.salesRepId ?? "__unassigned_sales_rep__"
+    : undefined;
+
+  const fromDate = searchParams.from
+    ? parseDateInputToZonedStart(searchParams.from)
+    : null;
+  const toDateStart = searchParams.to
+    ? parseDateInputToZonedStart(searchParams.to)
+    : null;
+  const toExclusive = toDateStart
+    ? getZonedDayRange(toDateStart).endExclusive
+    : undefined;
+
   // Parse filters from URL search params. Free-text search is handled entirely
   // on the client so typing never triggers a server roundtrip.
   const filters = {
@@ -31,22 +59,27 @@ export default async function SalesPage({ searchParams }: PageProps) {
     type: Object.values(InvoiceType).includes(searchParams.type as InvoiceType)
       ? (searchParams.type as InvoiceType)
       : undefined,
-    salesRepId: searchParams.repId || undefined,
+    salesRepId:
+      forcedSalesRepId ?? (searchParams.repId || undefined),
     pharmacyId: searchParams.clientId || undefined,
-    from: searchParams.from ? new Date(searchParams.from) : undefined,
-    to: searchParams.to ? new Date(searchParams.to + "T23:59:59") : undefined,
+    from: fromDate ?? undefined,
+    to: toExclusive,
     take: 100,
   };
 
   const [invoices, stats, salesReps, clients] = await Promise.all([
     getInvoices(filters),
-    getSalesStats(),
+    getSalesStats(forcedSalesRepId),
     getAllSalesReps(),
     prisma.pharmacy.findMany({
       where: { isActive: true },
       orderBy: { name: "asc" },
     }),
   ]);
+
+  const visibleSalesReps = forcedSalesRepId
+    ? salesReps.filter((rep) => rep.id === forcedSalesRepId)
+    : salesReps;
 
   const overdueCount = invoices.filter((i) => i.status === InvoiceStatus.OVERDUE).length;
 
@@ -80,12 +113,14 @@ export default async function SalesPage({ searchParams }: PageProps) {
           <p className="page-subtitle">متابعة الفواتير النقدية والآجلة والتحصيلات</p>
         </div>
         <div className="flex gap-2">
-          <Link prefetch={false}
-            href="/dashboard/sales-reps"
-            className="flex items-center gap-2 px-4 py-2 rounded-xl border border-border text-sm font-medium hover:bg-muted transition-colors"
-          >
-            المناديب
-          </Link>
+          {!isSalesRep && (
+            <Link prefetch={false}
+              href="/dashboard/sales-reps"
+              className="flex items-center gap-2 px-4 py-2 rounded-xl border border-border text-sm font-medium hover:bg-muted transition-colors"
+            >
+              المناديب
+            </Link>
+          )}
           <Link prefetch={false}
             href="/dashboard/sales/new"
             className="flex items-center gap-2 px-4 py-2 rounded-xl bg-primary text-primary-foreground text-sm font-medium hover:bg-primary/90 transition-colors"
@@ -128,12 +163,12 @@ export default async function SalesPage({ searchParams }: PageProps) {
       {/* Invoice Table with instant client-side search */}
       <InvoicesList
         invoices={invoiceRows}
-        salesReps={salesReps.map((rep) => ({ id: rep.id, name: rep.name }))}
+        salesReps={visibleSalesReps.map((rep) => ({ id: rep.id, name: rep.name }))}
         clients={clients.map((client) => ({ id: client.id, name: client.name }))}
         currentFilters={{
           status: searchParams.status,
           type: searchParams.type,
-          repId: searchParams.repId,
+          repId: forcedSalesRepId ?? searchParams.repId,
           clientId: searchParams.clientId,
           from: searchParams.from,
           to: searchParams.to,

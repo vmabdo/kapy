@@ -5,6 +5,7 @@ import { getSalesRepById } from "@/queries/sales";
 import { getAllProducts, getAllWarehouses } from "@/queries/inventory";
 import { prisma } from "@/lib/prisma";
 import { formatCurrency, formatDate, formatNumber, cn } from "@/lib/utils";
+import { getZonedMonthRange, getZonedYearMonth } from "@/lib/datetime";
 import {
   Users, ArrowRight, Phone, MapPin, Calendar,
   TrendingUp, FileText, Gift, Minus, DollarSign, Package, Target,
@@ -23,16 +24,18 @@ export default async function RepDetailPage({ params }: { params: { id: string }
   const rep = await getSalesRepById(params.id);
   if (!rep) notFound();
 
-  const now = new Date();
-  const currentYear = now.getFullYear();
-  const currentMonth = now.getMonth() + 1;
+  const currentPeriod = getZonedYearMonth(new Date());
+  const currentYear = currentPeriod.year;
+  const currentMonth = currentPeriod.month;
+  const { start: startOfMonth, endExclusive: endOfMonth } =
+    getZonedMonthRange(currentYear, currentMonth);
 
   // Financial data for current month
   const [monthInvoices, bonuses, deductions, targetPeriod, repMonthlyTarget, allProducts, warehouses] = await Promise.all([
     prisma.invoice.aggregate({
       where: {
         salesRepId: rep.id,
-        invoiceDate: { gte: new Date(currentYear, currentMonth - 1, 1) },
+        invoiceDate: { gte: startOfMonth, lt: endOfMonth },
       },
       _sum: { total: true },
       _count: true,
@@ -82,8 +85,6 @@ export default async function RepDetailPage({ params }: { params: { id: string }
 
   if (repMonthlyTarget && repMonthlyTarget.items.length > 0) {
     const targetProductIds = repMonthlyTarget.items.map((i) => i.productId);
-    const startOfMonth = new Date(currentYear, currentMonth - 1, 1);
-    const endOfMonth = new Date(currentYear, currentMonth, 1);
 
     // ── Path A: Regular (non-Legacy) invoices ─────────────────────────────
     // Fetch all payments for this rep's standard invoices in the current month.
@@ -94,7 +95,7 @@ export default async function RepDetailPage({ params }: { params: { id: string }
         invoice: {
           salesRepId: rep.id,
           isLegacy: false,
-          invoiceDate: { gte: startOfMonth },
+          invoiceDate: { gte: startOfMonth, lt: endOfMonth },
         },
       },
       select: {
@@ -274,7 +275,7 @@ export default async function RepDetailPage({ params }: { params: { id: string }
         <div className="section-card p-5 flex flex-col">
           <h2 className="font-semibold text-sm flex items-center gap-2 mb-5">
             <Target className="w-4 h-4 text-primary" />
-            إنجاز أهداف المنتجات — {formatDate(now, "ar-EG", { year: "numeric", month: "long", day: undefined })}
+            إنجاز أهداف المنتجات — {formatDate(startOfMonth, "ar-EG", { year: "numeric", month: "long", day: undefined })}
           </h2>
           {repMonthlyTarget && repMonthlyTarget.items.length > 0 ? (
             <>

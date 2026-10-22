@@ -3,6 +3,10 @@ import Link from "next/link";
 import { prisma } from "@/lib/prisma";
 import { ArrowRight, Printer, CalendarDays, TrendingUp, TrendingDown, FileText, Undo2 } from "lucide-react";
 import { formatCurrency, formatDate } from "@/lib/utils";
+import {
+  getZonedDayRange,
+  parseDateInputToZonedStart,
+} from "@/lib/datetime";
 import { PrintButton } from "../../sales/[id]/print-button";
 import { DailyDatePicker } from "./date-picker";
 import { Suspense } from "react";
@@ -11,13 +15,12 @@ export const metadata: Metadata = { title: "التقرير اليومي" };
 export const dynamic = "force-dynamic";
 
 export default async function DailyReportPage({ searchParams }: { searchParams: { date?: string } }) {
-  // Use date from searchParams or default to today
-  const selectedDate = searchParams?.date ? new Date(searchParams.date) : new Date();
-  // Ensure we work with the date in local time (midnight)
-  const today = new Date(selectedDate);
-  today.setHours(0, 0, 0, 0);
-  const tomorrow = new Date(today);
-  tomorrow.setDate(tomorrow.getDate() + 1);
+  // `date` is a calendar date (YYYY-MM-DD). Parse it as Cairo midnight, not as
+  // UTC midnight, then derive the exclusive next-midnight boundary.
+  const selectedDate = searchParams?.date
+    ? parseDateInputToZonedStart(searchParams.date) ?? new Date()
+    : new Date();
+  const { start: today, endExclusive: tomorrow } = getZonedDayRange(selectedDate);
   const isToday = !searchParams?.date;
 
   return (

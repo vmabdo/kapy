@@ -2,6 +2,7 @@ import type { Metadata } from "next";
 import Link from "next/link";
 import { prisma } from "@/lib/prisma";
 import { formatCurrency, formatDate, cn } from "@/lib/utils";
+import { getZonedMonthRange, getZonedYearMonth } from "@/lib/datetime";
 import { TrendingUp, ArrowRight, Users, Target, FileText, Award } from "lucide-react";
 import { RepPerformanceTable } from "./rep-performance-table";
 
@@ -10,9 +11,11 @@ export const dynamic = "force-dynamic";
 
 export default async function SalesPerformancePage() {
   const now = new Date();
-  const currentYear = now.getFullYear();
-  const currentMonth = now.getMonth() + 1;
-  const monthStart = new Date(currentYear, currentMonth - 1, 1);
+  const currentPeriod = getZonedYearMonth(now);
+  const currentYear = currentPeriod.year;
+  const currentMonth = currentPeriod.month;
+  const { start: monthStart, endExclusive: nextMonthStart } =
+    getZonedMonthRange(currentYear, currentMonth);
 
   // Get all active sales reps
   const reps = await prisma.salesRep.findMany({
@@ -27,7 +30,7 @@ export default async function SalesPerformancePage() {
   const [monthAgg, totalAgg, bonusAgg, deductionAgg] = await Promise.all([
     prisma.invoice.groupBy({
       by: ['salesRepId'],
-      where: { invoiceDate: { gte: monthStart } },
+      where: { invoiceDate: { gte: monthStart, lt: nextMonthStart } },
       _sum: { total: true },
       _count: true,
     }),

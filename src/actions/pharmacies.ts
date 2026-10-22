@@ -5,6 +5,7 @@ import { prisma } from "@/lib/prisma";
 import { requireRole } from "@/lib/auth-utils";
 import { revalidatePath } from "next/cache";
 import { UserRole } from "@prisma/client";
+import { getZonedYearMonth } from "@/lib/datetime";
 import { z } from "zod";
 
 // Optional text fields: treat empty/whitespace-only strings as "not provided"
@@ -97,12 +98,12 @@ export async function createPharmacy(
       });
 
       // 2. Initialize current month's target tracking
-      const now = new Date();
+      const currentPeriod = getZonedYearMonth(new Date());
       await tx.pharmacyTargetPeriod.create({
         data: {
           pharmacyId: pharmacy.id,
-          periodYear: now.getFullYear(),
-          periodMonth: now.getMonth() + 1,
+          periodYear: currentPeriod.year,
+          periodMonth: currentPeriod.month,
           target: data.targetAmount,
           achieved: 0,
         },

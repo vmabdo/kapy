@@ -3,6 +3,7 @@ import { getAllFinancialStatements } from "./actions";
 import { FinancialTabs, FinancialTabContent } from "./financial-tabs";
 import { PeriodPicker } from "./period-picker";
 import { formatCurrency } from "@/lib/utils";
+import { getZonedYearMonth } from "@/lib/datetime";
 import {
   TrendingUp, TrendingDown, Scale, Waves, FileText,
   ArrowUpRight, ArrowDownRight, Building2, Package, ShoppingCart, Wallet, Gift,
@@ -102,9 +103,9 @@ interface PageProps {
 }
 
 export default async function FinancialStatementsPage({ searchParams }: PageProps) {
-  const now = new Date();
-  const year = Number(searchParams.year ?? now.getFullYear());
-  const month = Number(searchParams.month ?? (now.getMonth() + 1));
+  const currentPeriod = getZonedYearMonth(new Date());
+  const year = Number(searchParams.year ?? currentPeriod.year);
+  const month = Number(searchParams.month ?? currentPeriod.month);
   const activeTab = searchParams.tab ?? "income";
 
   const { incomeStatement: IS, balanceSheet: BS, cashFlow: CF } =
