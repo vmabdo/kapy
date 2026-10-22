@@ -13,8 +13,9 @@ export default async function LowStockReportPage() {
   const settings = await getSystemSettings();
   const globalThreshold = settings?.lowStockThreshold ?? 10;
 
-  // The database compares each row with its own reorder level (or the global
-  // fallback) and only returns low-stock rows — never the whole stock table.
+  // The database sums quantity across every warehouse, compares that total
+  // with the product's reorder level (or the global fallback), and only returns
+  // low-stock products — never the whole stock table.
   const filtered = await getLowStockItems({
     fallbackThreshold: globalThreshold,
   });
@@ -50,7 +51,7 @@ export default async function LowStockReportPage() {
             تقرير نواقص المخزون
           </h1>
           <p className="page-subtitle">
-            منتجات وصلت إلى مستوى إعادة الطلب — الحد الافتراضي العالمي: {globalThreshold} وحدة
+            منتجات إجمالي مخزونها وصل إلى مستوى إعادة الطلب — الحد الافتراضي العالمي: {globalThreshold} وحدة
           </p>
         </div>
         <Link
@@ -109,8 +110,8 @@ export default async function LowStockReportPage() {
                 <tr>
                   <th className="text-right">المنتج</th>
                   <th className="text-right">الفئة</th>
-                  <th className="text-right">المخزن</th>
-                  <th className="text-center">الكمية الحالية</th>
+                  <th className="text-center">أماكن التخزين</th>
+                  <th className="text-center">إجمالي الكمية</th>
                   <th className="text-center">حد إعادة الطلب</th>
                   <th className="text-center">الحالة</th>
                 </tr>
@@ -130,18 +131,10 @@ export default async function LowStockReportPage() {
                     <td className="data-table-cell text-sm text-muted-foreground">
                       {item.product.category.name}
                     </td>
-                    <td className="data-table-cell text-sm">
-                      <span className="flex items-center gap-1.5">
-                        {item.warehouse.name}
-                        <span className={cn(
-                          "text-[9px] px-1.5 py-0.5 rounded-full font-semibold",
-                          item.warehouse.type === "MAIN"
-                            ? "bg-primary/10 text-primary"
-                            : "bg-muted text-muted-foreground"
-                        )}>
-                          {item.warehouse.type === "MAIN" ? "رئيسي" : "فرعي"}
-                        </span>
-                      </span>
+                    <td className="data-table-cell text-center text-sm text-muted-foreground">
+                      {item.warehouseCount > 0
+                        ? `${item.warehouseCount} مخزن`
+                        : "بدون رصيد"}
                     </td>
                     <td className="data-table-cell text-center">
                       <span className={cn(

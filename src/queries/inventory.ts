@@ -122,11 +122,14 @@ export async function getStockByWarehouse(warehouseId: string) {
 }
 
 export interface LowStockItem {
+  /** Product id — low-stock detection is product-level, not per warehouse. */
   id: string;
-  warehouseId: string;
   productId: string;
+  /** Sum of quantity across every warehouse. */
   quantity: number;
   threshold: number;
+  /** Number of warehouse balance rows that contribute to the total. */
+  warehouseCount: number;
   product: {
     id: string;
     name: string;
@@ -135,33 +138,28 @@ export interface LowStockItem {
     reorderLevel: number;
     category: { name: string };
   };
-  warehouse: {
-    id: string;
-    name: string;
-    type: WarehouseType;
-  };
 }
 
 interface LowStockRow {
   id: string;
-  warehouseId: string;
   productId: string;
   quantity: number;
   threshold: number;
+  warehouseCount: number;
   productName: string;
   productSku: string;
   productUnit: string;
   reorderLevel: number;
   categoryName: string;
-  warehouseName: string;
-  warehouseType: WarehouseType;
 }
 
 /**
- * Low-stock rows are filtered and joined in PostgreSQL. The previous version
- * loaded every stock item + product + warehouse into Node just to compare
- * `quantity` with the per-product reorder level, which could exhaust memory on
- * a large catalogue.
+ * Products whose *aggregated* stock has reached their reorder level.
+ *
+ * Stock is tracked per warehouse, but low-stock status is a product-level
+ * decision: a product with 100 units in the main warehouse and 0 in a sub
+ * warehouse is healthy. Aggregating in PostgreSQL avoids both the per-row false
+ * positives and loading the full product/stock catalogue into Node.
  *
  * `fallbackThreshold` is used for products whose reorderLevel is 0 (the
  * low-stock report exposes a global setting for those products).
@@ -175,40 +173,57 @@ export async function getLowStockItems(options?: {
   );
 
   const rows = await prisma.$queryRaw<LowStockRow[]>`
+    WITH stock_totals AS (
+      SELECT
+        si."productId" AS "productId",
+        SUM(si.quantity)::float8 AS "quantity",
+        COUNT(*)::int AS "warehouseCount"
+      FROM "stock_items" si
+      GROUP BY si."productId"
+    ),
+    product_stock AS (
+      SELECT
+        p.id AS "id",
+        p.id AS "productId",
+        COALESCE(st."quantity", 0)::float8 AS "quantity",
+        CASE
+          WHEN p."reorderLevel" > 0 THEN p."reorderLevel"
+          ELSE ${fallbackThreshold}::int
+        END AS "threshold",
+        COALESCE(st."warehouseCount", 0)::int AS "warehouseCount",
+        p.name AS "productName",
+        p.sku AS "productSku",
+        p.unit AS "productUnit",
+        p."reorderLevel" AS "reorderLevel",
+        c.name AS "categoryName"
+      FROM "products" p
+      INNER JOIN "categories" c ON c.id = p."categoryId"
+      LEFT JOIN stock_totals st ON st."productId" = p.id
+      WHERE p."isActive" = true
+    )
     SELECT
-      si.id AS "id",
-      si."warehouseId" AS "warehouseId",
-      si."productId" AS "productId",
-      si.quantity::float8 AS "quantity",
-      CASE
-        WHEN p."reorderLevel" > 0 THEN p."reorderLevel"
-        ELSE ${fallbackThreshold}
-      END AS "threshold",
-      p.name AS "productName",
-      p.sku AS "productSku",
-      p.unit AS "productUnit",
-      p."reorderLevel" AS "reorderLevel",
-      c.name AS "categoryName",
-      w.name AS "warehouseName",
-      w.type::text AS "warehouseType"
-    FROM "stock_items" si
-    INNER JOIN "products" p ON p.id = si."productId"
-    INNER JOIN "warehouses" w ON w.id = si."warehouseId"
-    INNER JOIN "categories" c ON c.id = p."categoryId"
-    WHERE p."isActive" = true
-      AND si.quantity <= CASE
-        WHEN p."reorderLevel" > 0 THEN p."reorderLevel"
-        ELSE ${fallbackThreshold}
-      END
-    ORDER BY si.quantity ASC, p.name ASC
+      "id",
+      "productId",
+      "quantity",
+      "threshold",
+      "warehouseCount",
+      "productName",
+      "productSku",
+      "productUnit",
+      "reorderLevel",
+      "categoryName"
+    FROM product_stock
+    WHERE "threshold" > 0
+      AND "quantity" <= "threshold"
+    ORDER BY "quantity" ASC, "productName" ASC
   `;
 
   return rows.map((row) => ({
     id: row.id,
-    warehouseId: row.warehouseId,
     productId: row.productId,
     quantity: Number(row.quantity) || 0,
     threshold: Number(row.threshold) || 0,
+    warehouseCount: Number(row.warehouseCount) || 0,
     product: {
       id: row.productId,
       name: row.productName,
@@ -216,11 +231,6 @@ export async function getLowStockItems(options?: {
       unit: row.productUnit,
       reorderLevel: Number(row.reorderLevel) || 0,
       category: { name: row.categoryName },
-    },
-    warehouse: {
-      id: row.warehouseId,
-      name: row.warehouseName,
-      type: row.warehouseType,
     },
   }));
 }

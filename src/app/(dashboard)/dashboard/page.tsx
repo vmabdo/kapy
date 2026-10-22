@@ -197,7 +197,7 @@ async function DashboardContent({ session }: { session: any }) {
       stock: p.stockItems.reduce((sum, item) => sum + Number(item.quantity), 0),
       reorderLevel: p.reorderLevel,
     }))
-    .filter((p) => p.stock <= p.reorderLevel);
+    .filter((p) => p.reorderLevel > 0 && p.stock <= p.reorderLevel);
   const lowStockCount = lowStockAlerts.length;
   const topLowStock = lowStockAlerts.slice(0, 5);
 

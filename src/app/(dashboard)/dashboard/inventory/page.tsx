@@ -50,8 +50,14 @@ export default async function InventoryPage() {
             إدارة المخازن والمخزون
           </h1>
           <p className="page-subtitle">
-            {warehouses.length} مخزن نشط — {lowStockItems.length > 0 && (
-              <span className="text-amber-600 font-medium">{lowStockItems.length} منتج يحتاج إعادة طلب</span>
+            {warehouses.length} مخزن نشط
+            {lowStockItems.length > 0 && (
+              <>
+                {" — "}
+                <span className="text-amber-600 font-medium">
+                  {lowStockItems.length} منتج يحتاج إعادة طلب
+                </span>
+              </>
             )}
           </p>
         </div>
@@ -193,7 +199,7 @@ export default async function InventoryPage() {
                   key={item.id}
                   className="text-xs bg-amber-100 dark:bg-amber-900/30 text-amber-700 dark:text-amber-400 px-2 py-1 rounded-md"
                 >
-                  {item.product.name} ({Number(item.quantity).toFixed(2)} متبقي)
+                  {item.product.name} ({Number(item.quantity).toFixed(2)} إجمالي المتبقي)
                 </span>
               ))}
               {lowStockItems.length > 5 && (

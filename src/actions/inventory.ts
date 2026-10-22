@@ -3,7 +3,10 @@ import { handleActionError } from "@/lib/error-handler";
 
 import { prisma } from "@/lib/prisma";
 import { requireRole } from "@/lib/auth-utils";
-import { decrementStockOrThrow } from "@/lib/stock";
+import {
+  decrementStockOrThrow,
+  getAggregatedLowStockProducts,
+} from "@/lib/stock";
 import { revalidatePath } from "next/cache";
 import {
   WarehouseType,
@@ -576,30 +579,23 @@ export async function createStockMovement(
       }
 
       // Low-stock notifications only for movements that reduce a warehouse.
+      // Compare against total stock across all warehouses, not the source row.
       if (
         data.movementType === StockMovementType.OUTBOUND &&
         sourceWarehouse
       ) {
-        const stockItems = await tx.stockItem.findMany({
-          where: {
-            warehouseId: sourceWarehouse.id,
-            productId: { in: productIds },
-          },
-          include: {
-            product: { select: { name: true, reorderLevel: true } },
-          },
-        });
+        const lowStockProducts = await getAggregatedLowStockProducts(
+          tx,
+          productIds
+        );
 
-        const alertsToCreate = stockItems
-          .filter(
-            (stockItem) =>
-              Number(stockItem.quantity) <= stockItem.product.reorderLevel
-          )
-          .map((stockItem) => ({
-            type: "LOW_STOCK" as const,
-            title: "تنبيه: مخزون منخفض",
-            message: `المنتج "${stockItem.product.name}" وصل إلى مستوى إعادة الطلب (${stockItem.quantity} وحدة متبقية)`,
-          }));
+        const alertsToCreate = lowStockProducts.map((product) => ({
+          type: "LOW_STOCK" as const,
+          title: "تنبيه: مخزون منخفض",
+          message: `المنتج "${product.name}" وصل إلى مستوى إعادة الطلب (${Number(
+            product.totalQuantity.toFixed(3)
+          )} وحدة متبقية)`,
+        }));
 
         if (alertsToCreate.length > 0) {
           await tx.alert.createMany({ data: alertsToCreate });
@@ -796,7 +792,6 @@ export async function createStockCountCorrection(
           isActive: true,
           costPrice: true,
           sellingPrice: true,
-          reorderLevel: true,
         },
       }),
     ]);
@@ -844,8 +839,6 @@ export async function createStockCountCorrection(
         },
       });
 
-      let finalQuantity: number;
-
       if (isShortage) {
         await decrementStockOrThrow(tx, {
           warehouseId: warehouse.id,
@@ -853,20 +846,8 @@ export async function createStockCountCorrection(
           quantity,
           productName: product.name,
         });
-
-        const current = await tx.stockItem.findUniqueOrThrow({
-          where: {
-            warehouseId_productId: {
-              warehouseId: warehouse.id,
-              productId: product.id,
-            },
-          },
-          select: { quantity: true },
-        });
-
-        finalQuantity = Number(current.quantity);
       } else {
-        const updated = await tx.stockItem.upsert({
+        await tx.stockItem.upsert({
           where: {
             warehouseId_productId: {
               warehouseId: warehouse.id,
@@ -879,20 +860,25 @@ export async function createStockCountCorrection(
             productId: product.id,
             quantity,
           },
-          select: { quantity: true },
         });
-
-        finalQuantity = Number(updated.quantity);
       }
 
-      if (isShortage && finalQuantity <= product.reorderLevel) {
-        await tx.alert.create({
-          data: {
-            type: "LOW_STOCK",
-            title: "تنبيه: مخزون منخفض بعد تصحيح الجرد",
-            message: `المنتج "${product.name}" وصل إلى مستوى إعادة الطلب (${finalQuantity} وحدة متبقية)`,
-          },
-        });
+      if (isShortage) {
+        const [lowStockProduct] = await getAggregatedLowStockProducts(tx, [
+          product.id,
+        ]);
+
+        if (lowStockProduct) {
+          await tx.alert.create({
+            data: {
+              type: "LOW_STOCK",
+              title: "تنبيه: مخزون منخفض بعد تصحيح الجرد",
+              message: `المنتج "${lowStockProduct.name}" وصل إلى مستوى إعادة الطلب (${Number(
+                lowStockProduct.totalQuantity.toFixed(3)
+              )} وحدة متبقية)`,
+            },
+          });
+        }
       }
 
       return movement;
@@ -1052,27 +1038,18 @@ export async function dispatchSamples(
         });
       }
 
-      const updatedStockItems = await tx.stockItem.findMany({
-        where: {
-          warehouseId: warehouse.id,
-          productId: { in: productIds },
-        },
-        select: {
-          quantity: true,
-          product: { select: { name: true, reorderLevel: true } },
-        },
-      });
+      const lowStockProducts = await getAggregatedLowStockProducts(
+        tx,
+        productIds
+      );
 
-      const alertsToCreate = updatedStockItems
-        .filter(
-          (stockItem) =>
-            Number(stockItem.quantity) <= stockItem.product.reorderLevel
-        )
-        .map((stockItem) => ({
-          type: "LOW_STOCK" as const,
-          title: "تنبيه: مخزون منخفض بعد صرف العينات",
-          message: `المنتج "${stockItem.product.name}" وصل إلى مستوى إعادة الطلب (${stockItem.quantity} وحدة متبقية)`,
-        }));
+      const alertsToCreate = lowStockProducts.map((product) => ({
+        type: "LOW_STOCK" as const,
+        title: "تنبيه: مخزون منخفض بعد صرف العينات",
+        message: `المنتج "${product.name}" وصل إلى مستوى إعادة الطلب (${Number(
+          product.totalQuantity.toFixed(3)
+        )} وحدة متبقية)`,
+      }));
 
       if (alertsToCreate.length > 0) {
         await tx.alert.createMany({ data: alertsToCreate });

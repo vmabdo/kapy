@@ -7,6 +7,55 @@ interface DecrementStockInput {
   productName?: string;
 }
 
+export interface AggregatedLowStockProduct {
+  id: string;
+  name: string;
+  reorderLevel: number;
+  totalQuantity: number;
+}
+
+/**
+ * Resolve low-stock notifications against total stock across every warehouse.
+ *
+ * A zero balance in one sub-warehouse must not raise a product-level alert when
+ * the main warehouse (or another branch) still has healthy stock.
+ */
+export async function getAggregatedLowStockProducts(
+  tx: Prisma.TransactionClient,
+  productIds: string[]
+): Promise<AggregatedLowStockProduct[]> {
+  if (productIds.length === 0) return [];
+
+  const products = await tx.product.findMany({
+    where: {
+      id: { in: Array.from(new Set(productIds)) },
+      isActive: true,
+    },
+    select: {
+      id: true,
+      name: true,
+      reorderLevel: true,
+      stockItems: { select: { quantity: true } },
+    },
+  });
+
+  return products
+    .map((product) => ({
+      id: product.id,
+      name: product.name,
+      reorderLevel: product.reorderLevel,
+      totalQuantity: product.stockItems.reduce(
+        (sum, item) => sum + Number(item.quantity),
+        0
+      ),
+    }))
+    .filter(
+      (product) =>
+        product.reorderLevel > 0 &&
+        product.totalQuantity <= product.reorderLevel
+    );
+}
+
 /**
  * Atomically decrements a stock balance only when enough physical stock still
  * exists. The conditional UPDATE is the source of truth; the pre-transaction
