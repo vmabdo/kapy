@@ -1,5 +1,10 @@
 import { auth } from "@/lib/auth";
-import { NextResponse } from "next/server";
+import {
+  NextResponse,
+  type NextFetchEvent,
+  type NextMiddleware,
+  type NextRequest,
+} from "next/server";
 import { UserRole } from "@prisma/client";
 
 // Rate limiting map (IP -> info)
@@ -112,6 +117,9 @@ const DASHBOARD_ROOT_ROLES: readonly UserRole[] = [
   UserRole.VIEWER,
 ];
 
+const AUTH_API_PREFIX = "/api/auth";
+const STATIC_FILE_PATTERN = /\/[^/]+\.[a-zA-Z0-9]+$/;
+
 function normalizePathname(pathname: string): string {
   if (pathname.length <= 1) return pathname;
   return pathname.replace(/\/+$/, "") || "/";
@@ -125,14 +133,47 @@ function getRouteRule(pathname: string): RouteRule | undefined {
   return ROUTE_RULES.find((rule) => matchesRoute(pathname, rule.path));
 }
 
-export default auth((req) => {
+/**
+ * Requests that must never enter the NextAuth middleware wrapper.
+ *
+ * This bypass happens BEFORE `auth()` runs. That is essential for the session
+ * invalidation/logout routes: wrapping them can let NextAuth re-issue the very
+ * cookie the handler is trying to delete, which was one cause of the
+ * `/login` → `/dashboard` redirect loop.
+ */
+function isBypassedPath(pathname: string): boolean {
+  if (
+    pathname === AUTH_API_PREFIX ||
+    pathname.startsWith(`${AUTH_API_PREFIX}/`)
+  ) {
+    return true;
+  }
+
+  if (pathname === "/_next" || pathname.startsWith("/_next/")) {
+    return true;
+  }
+
+  if (pathname === "/images" || pathname.startsWith("/images/")) {
+    return true;
+  }
+
+  if (
+    pathname === "/favicon.ico" ||
+    pathname === "/robots.txt" ||
+    pathname === "/sitemap.xml"
+  ) {
+    return true;
+  }
+
+  // Any static asset such as /logo.svg, /fonts/Cairo.woff2, etc.
+  return STATIC_FILE_PATTERN.test(pathname);
+}
+
+const authMiddleware = auth((req) => {
   const { nextUrl, auth: session } = req;
   const pathname = normalizePathname(nextUrl.pathname);
-  const isLoggedIn = !!session?.user;
-  const isAuthPage = pathname === "/login" || pathname.startsWith("/login/");
-  const isDashboard = pathname === "/dashboard" || pathname.startsWith("/dashboard/");
 
-  // Apply rate limiting for POST requests (Server actions & API routes)
+  // Apply rate limiting for POST requests (Server actions & API routes).
   if (req.method === "POST") {
     const ip =
       req.headers.get("x-forwarded-for") ||
@@ -154,50 +195,109 @@ export default auth((req) => {
     rateLimits.set(ip, limitInfo);
   }
 
-  // Redirect unauthenticated users trying to access protected routes
-  if (!isLoggedIn && isDashboard) {
+  const isLoginPage =
+    pathname === "/login" || pathname.startsWith("/login/");
+  const isRootPage = pathname === "/";
+  const isDashboard =
+    pathname === "/dashboard" || pathname.startsWith("/dashboard/");
+
+  const userId = session?.user?.id;
+  const role = session?.user?.role as UserRole | undefined;
+  const hasSessionUser = Boolean(userId);
+  const canEnterDashboard = Boolean(userId && role);
+
+  // Auth.js sends expired/invalid sessions here with ?session=expired or
+  // ?error=.... Never bounce those requests back to /dashboard: the stale
+  // JWT may still be present until the invalidation response clears it.
+  const loginHasExpiredHint =
+    isLoginPage &&
+    (nextUrl.searchParams.has("session") ||
+      nextUrl.searchParams.has("error"));
+
+  /**
+   * Public login route.
+   *
+   * - No usable session → render /login immediately. This is the critical
+   *   "already on /login" guard that prevents an unauthenticated loop.
+   * - Valid session → send the user to the dashboard, except when the login
+   *   page is explicitly showing an expired-session/error message.
+   */
+  if (isLoginPage) {
+    if (canEnterDashboard && !loginHasExpiredHint) {
+      return NextResponse.redirect(new URL("/dashboard", nextUrl));
+    }
+    return NextResponse.next();
+  }
+
+  // Root is a public entry point: send authenticated users to the dashboard
+  // and unauthenticated users to login. The destination is never matched by
+  // this branch again, so it cannot loop.
+  if (isRootPage) {
+    return NextResponse.redirect(
+      new URL(canEnterDashboard ? "/dashboard" : "/login", nextUrl)
+    );
+  }
+
+  if (!isDashboard) {
+    return NextResponse.next();
+  }
+
+  // Protected dashboard routes: unauthenticated users always go to /login.
+  if (!hasSessionUser) {
     return NextResponse.redirect(new URL("/login", nextUrl));
   }
 
-  // Redirect already-authenticated users away from the login page
-  if (isLoggedIn && isAuthPage) {
-    return NextResponse.redirect(new URL("/dashboard", nextUrl));
+  // A token without a role is unusable. Clear it through the non-middleware
+  // invalidation endpoint instead of redirecting to /login while the stale JWT
+  // is still present (which would bounce back to /dashboard).
+  if (!role) {
+    return NextResponse.redirect(
+      new URL("/api/auth/invalidate-session", nextUrl)
+    );
   }
 
-  // Strict role-based access control for every dashboard route.
-  if (isLoggedIn && isDashboard) {
-    const userRole = session?.user?.role as UserRole | undefined;
-    if (!userRole) {
-      return NextResponse.redirect(new URL("/login", nextUrl));
+  // The dashboard root is allowed for every valid role. Sub-route permissions
+  // are checked below; forbidden sub-routes land on `/dashboard`, which this
+  // branch accepts, so they cannot form a redirect loop.
+  if (pathname === "/dashboard") {
+    if (!DASHBOARD_ROOT_ROLES.includes(role)) {
+      return NextResponse.redirect(
+        new URL("/api/auth/invalidate-session", nextUrl)
+      );
     }
+    return NextResponse.next();
+  }
 
-    if (pathname === "/dashboard") {
-      if (!DASHBOARD_ROOT_ROLES.includes(userRole)) {
-        return NextResponse.redirect(new URL("/login", nextUrl));
-      }
-    } else {
-      const rule = getRouteRule(pathname);
-      const allowedRoles = rule?.allowedRoles ?? ADMIN_FALLBACK_ROLES;
+  const rule = getRouteRule(pathname);
+  const allowedRoles = rule?.allowedRoles ?? ADMIN_FALLBACK_ROLES;
 
-      if (!allowedRoles.includes(userRole)) {
-        return NextResponse.redirect(
-          new URL("/dashboard?error=forbidden", nextUrl)
-        );
-      }
-    }
+  if (!allowedRoles.includes(role)) {
+    return NextResponse.redirect(
+      new URL("/dashboard?error=forbidden", nextUrl)
+    );
   }
 
   return NextResponse.next();
-});
+}) as unknown as NextMiddleware;
+
+export default function middleware(
+  request: NextRequest,
+  event: NextFetchEvent
+) {
+  const pathname = normalizePathname(request.nextUrl.pathname);
+
+  if (isBypassedPath(pathname)) {
+    return NextResponse.next();
+  }
+
+  return authMiddleware(request, event);
+}
 
 export const config = {
   /**
-   * Match all routes EXCEPT:
-   * - API routes other than auth (handled separately)
-   * - Next.js internals (_next/static, _next/image)
-   * - Public static files (favicon, robots, etc.)
+   * Keep Next.js internals and all Auth.js endpoints out of middleware.
+   * `/login` remains matched because authenticated visitors still need the
+   * optional redirect to /dashboard.
    */
-  matcher: [
-    "/((?!api/(?!auth)|_next/static|_next/image|favicon.ico|robots.txt|sitemap.xml).*)",
-  ],
+  matcher: ["/((?!api/auth|_next/static|_next/image|favicon.ico|images).*)"],
 };
