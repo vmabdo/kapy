@@ -49,7 +49,13 @@ export async function getInvoices(filters?: {
       ...searchFilter,
     },
     include: {
-      pharmacy: { select: { name: true, governorate: { select: { name: true } } } },
+      pharmacy: {
+        select: {
+          name: true,
+          clientType: true,
+          governorate: { select: { name: true } },
+        },
+      },
       salesRep: { select: { name: true } },
     },
     orderBy: { invoiceDate: "desc" },

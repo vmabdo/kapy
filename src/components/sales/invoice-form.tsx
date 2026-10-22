@@ -37,6 +37,14 @@ import {
   ClientCombobox,
   type ClientComboboxOption,
 } from "@/components/sales/client-combobox";
+import {
+  SalesRepCombobox,
+  type SalesRepOption,
+} from "@/components/sales/sales-rep-combobox";
+import {
+  ProductCombobox,
+  type ProductOption,
+} from "@/components/sales/product-combobox";
 
 interface PharmacyOption extends ClientComboboxOption {
   governorateId: string;
@@ -46,8 +54,8 @@ interface PharmacyOption extends ClientComboboxOption {
 
 interface Props {
   pharmacies: PharmacyOption[];
-  salesReps: { id: string; name: string; employeeCode: string }[];
-  products: { id: string; name: string; sku: string; unit: string; sellingPrice: number }[];
+  salesReps: SalesRepOption[];
+  products: ProductOption[];
   initialClientId?: string;
 }
 
@@ -249,13 +257,20 @@ export function InvoiceForm({ pharmacies, salesReps, products, initialClientId }
 
   const handleProductChange = (index: number, productId: string) => {
     const product = products.find((p) => p.id === productId);
+    setValue(`items.${index}.unitPrice`, product?.sellingPrice ?? 0, {
+      shouldValidate: true,
+    });
+
+    // Ensure the row is immediately sellable once a product is picked.
     if (product) {
-      setValue(`items.${index}.unitPrice`, product.sellingPrice, {
-        shouldValidate: true,
-      });
-      // Recalculate upfront items to use new discountedUnitPrice
-      setTimeout(syncUpfrontItems, 0);
+      const quantity = Number(getValues(`items.${index}.quantity`));
+      if (!Number.isFinite(quantity) || quantity <= 0) {
+        setValue(`items.${index}.quantity`, 1, { shouldValidate: true });
+      }
     }
+
+    // Recalculate upfront items to use new discountedUnitPrice
+    setTimeout(syncUpfrontItems, 0);
   };
 
   // When items change, sync the upfrontPaymentItems array to match
@@ -621,14 +636,19 @@ export function InvoiceForm({ pharmacies, salesReps, products, initialClientId }
           {!isLegacy && (
             <div className="space-y-1.5 md:col-span-2">
               <label className="text-sm font-medium">مندوب المبيعات</label>
-              <select {...register("salesRepId")} className={inputClass}>
-                <option value="">اختر المندوب</option>
-                {salesReps.map((r) => (
-                  <option key={r.id} value={r.id}>
-                    {r.name} ({r.employeeCode})
-                  </option>
-                ))}
-              </select>
+              <Controller
+                control={control}
+                name="salesRepId"
+                render={({ field }) => (
+                  <SalesRepCombobox
+                    salesReps={salesReps}
+                    value={field.value ?? ""}
+                    onChange={field.onChange}
+                    onBlur={field.onBlur}
+                    invalid={Boolean(errors.salesRepId)}
+                  />
+                )}
+              />
               {errors.salesRepId && (
                 <p className="text-red-500 text-xs">{errors.salesRepId.message}</p>
               )}
@@ -661,22 +681,28 @@ export function InvoiceForm({ pharmacies, salesReps, products, initialClientId }
             >
               <div className="col-span-12 sm:col-span-4">
                 <label className="text-xs text-muted-foreground mb-1 block">المنتج</label>
-                <select
-                  {...register(`items.${index}.productId`)}
-                  onChange={(e) => {
-                    register(`items.${index}.productId`).onChange(e);
-                    handleProductChange(index, e.target.value);
-                    setTimeout(syncUpfrontItems, 0);
-                  }}
-                  className={inputClass}
-                >
-                  <option value="">اختر منتجاً...</option>
-                  {products.map((p) => (
-                    <option key={p.id} value={p.id}>
-                      {p.name}
-                    </option>
-                  ))}
-                </select>
+                <Controller
+                  control={control}
+                  name={`items.${index}.productId`}
+                  render={({ field }) => (
+                    <ProductCombobox
+                      products={products}
+                      selectedGovernorateId={selectedPharmacy?.governorateId ?? null}
+                      value={field.value ?? ""}
+                      onChange={(productId) => {
+                        field.onChange(productId);
+                        handleProductChange(index, productId);
+                      }}
+                      onBlur={field.onBlur}
+                      invalid={Boolean(errors.items?.[index]?.productId)}
+                    />
+                  )}
+                />
+                {errors.items?.[index]?.productId && (
+                  <p className="text-red-500 text-xs mt-1">
+                    {errors.items[index]?.productId?.message}
+                  </p>
+                )}
               </div>
 
               {/* Quantity */}

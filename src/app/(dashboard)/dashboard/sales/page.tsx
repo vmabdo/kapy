@@ -2,28 +2,13 @@ import type { Metadata } from "next";
 import Link from "next/link";
 import { getInvoices, getSalesStats, getAllSalesReps } from "@/queries/sales";
 import { prisma } from "@/lib/prisma";
-import { ShoppingCart, Plus, Filter, FileText, ArrowRight, TrendingUp, AlertTriangle, X } from "lucide-react";
-import { formatCurrency, formatDate, cn } from "@/lib/utils";
-import { InvoiceStatus, InvoiceType } from "@prisma/client";
-import { SalesFilters } from "@/components/sales/sales-filters";
-import { SalesSearch } from "@/components/sales/sales-search";
+import { ShoppingCart, Plus } from "lucide-react";
+import { formatCurrency, formatDate } from "@/lib/utils";
+import { ClientType, InvoiceStatus, InvoiceType } from "@prisma/client";
+import { InvoicesList } from "@/components/sales/invoices-list";
 
 export const metadata: Metadata = { title: "المبيعات والفواتير" };
 export const dynamic = "force-dynamic";
-
-const STATUS_LABELS: Record<InvoiceStatus, { label: string; class: string }> = {
-  DRAFT: { label: "مسودة", class: "bg-muted text-muted-foreground" },
-  CONFIRMED: { label: "مؤكدة", class: "bg-blue-100 text-blue-700 dark:bg-blue-900/30 dark:text-blue-400" },
-  PARTIALLY_PAID: { label: "سداد جزئي", class: "bg-amber-100 text-amber-700 dark:bg-amber-900/30 dark:text-amber-400" },
-  PAID: { label: "مسددة", class: "bg-green-100 text-green-700 dark:bg-green-900/30 dark:text-green-400" },
-  OVERDUE: { label: "متأخرة", class: "bg-red-100 text-red-700 dark:bg-red-900/30 dark:text-red-400" },
-  CANCELLED: { label: "ملغاة", class: "bg-muted text-muted-foreground line-through" },
-};
-
-const TYPE_LABELS: Record<InvoiceType, string> = {
-  CASH: "نقدي",
-  CREDIT: "آجل",
-};
 
 interface PageProps {
   searchParams: {
@@ -33,12 +18,12 @@ interface PageProps {
     clientId?: string;
     from?: string;
     to?: string;
-    query?: string;
   };
 }
 
 export default async function SalesPage({ searchParams }: PageProps) {
-  // Parse filters from URL search params
+  // Parse filters from URL search params. Free-text search is handled entirely
+  // on the client so typing never triggers a server roundtrip.
   const filters = {
     status: Object.values(InvoiceStatus).includes(searchParams.status as InvoiceStatus)
       ? (searchParams.status as InvoiceStatus)
@@ -50,7 +35,6 @@ export default async function SalesPage({ searchParams }: PageProps) {
     pharmacyId: searchParams.clientId || undefined,
     from: searchParams.from ? new Date(searchParams.from) : undefined,
     to: searchParams.to ? new Date(searchParams.to + "T23:59:59") : undefined,
-    query: searchParams.query?.trim() || undefined,
     take: 100,
   };
 
@@ -65,9 +49,25 @@ export default async function SalesPage({ searchParams }: PageProps) {
   ]);
 
   const overdueCount = invoices.filter((i) => i.status === InvoiceStatus.OVERDUE).length;
-  const isFiltered = Object.values(filters).some(
-    (v) => v !== undefined && v !== 100
-  );
+
+  const invoiceRows = invoices.map((invoice) => ({
+    id: invoice.id,
+    invoiceNumber: invoice.invoiceNumber,
+    status: invoice.status,
+    type: invoice.type,
+    isLegacy: invoice.isLegacy,
+    pharmacyName: invoice.pharmacy.name,
+    // External companies/warehouses are stored as Pharmacy clients.
+    companyName:
+      invoice.pharmacy.clientType === ClientType.EXTERNAL_WAREHOUSE
+        ? invoice.pharmacy.name
+        : null,
+    governorateName: invoice.pharmacy.governorate.name,
+    salesRepName: invoice.salesRep?.name ?? null,
+    total: Number(invoice.total),
+    remainingAmount: Number(invoice.remainingAmount),
+    invoiceDateLabel: formatDate(invoice.invoiceDate),
+  }));
 
   return (
     <div>
@@ -125,136 +125,20 @@ export default async function SalesPage({ searchParams }: PageProps) {
         </div>
       </div>
 
-      {/* Invoice Table */}
-      <div className="bg-card border border-border rounded-xl">
-        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 px-5 py-4 border-b border-border/60">
-          <h2 className="font-semibold flex items-center gap-2 text-sm">
-            <FileText className="w-4 h-4 text-primary" />
-            الفواتير
-            {isFiltered && (
-              <span className="text-[11px] bg-primary/10 text-primary px-2 py-0.5 rounded-full font-medium">
-                مصفاة — {invoices.length} نتيجة
-              </span>
-            )}
-          </h2>
-          {/* Search & Filter Panel */}
-          <div className="flex items-center gap-3 w-full sm:w-auto justify-end">
-            <SalesSearch />
-            <SalesFilters
-              salesReps={salesReps.map(r => ({ id: r.id, name: r.name }))}
-              clients={clients.map(c => ({ id: c.id, name: c.name }))}
-              currentFilters={{
-                status: searchParams.status,
-                type: searchParams.type,
-                repId: searchParams.repId,
-                clientId: searchParams.clientId,
-                from: searchParams.from,
-                to: searchParams.to,
-              }}
-            />
-          </div>
-        </div>
-
-        {invoices.length === 0 ? (
-          <div className="p-12 flex flex-col items-center justify-center text-center bg-muted/10 border border-dashed border-border/60 rounded-xl m-4">
-            <div className="w-16 h-16 bg-muted rounded-full flex items-center justify-center mb-4">
-              <FileText className="w-8 h-8 text-muted-foreground opacity-50" />
-            </div>
-            <h3 className="text-lg font-bold text-foreground mb-2">
-              {isFiltered ? "لا توجد فواتير تطابق المرشحات" : "لا توجد فواتير مسجلة"}
-            </h3>
-            <p className="text-sm text-muted-foreground mb-4">
-              {isFiltered ? "حاول تغيير أو إزالة المرشحات للوصول لنتائج أفضل." : "لم يتم تسجيل أي فواتير مبيعات في النظام حتى الآن."}
-            </p>
-            {isFiltered ? (
-              <Link prefetch={false} href="/dashboard/sales" className="inline-flex items-center gap-2 px-4 py-2 rounded-xl border border-border text-sm font-medium hover:bg-muted transition-colors">
-                <X className="w-4 h-4" /> إزالة المرشحات
-              </Link>
-            ) : (
-              <Link prefetch={false} href="/dashboard/sales/new" className="inline-flex items-center gap-2 px-4 py-2 rounded-xl bg-primary text-primary-foreground text-sm font-medium hover:bg-primary/90 transition-colors">
-                <Plus className="w-4 h-4" /> أنشئ فاتورة جديدة
-              </Link>
-            )}
-          </div>
-        ) : (
-          <div className="overflow-x-auto">
-            <table className="w-full text-sm">
-              <thead>
-                <tr className="bg-muted/40 border-b border-border/60">
-                  <th className="text-right px-5 py-3 font-medium text-muted-foreground">رقم الفاتورة</th>
-                  <th className="text-right px-4 py-3 font-medium text-muted-foreground">العميل / المندوب</th>
-                  <th className="text-center px-4 py-3 font-medium text-muted-foreground">النوع</th>
-                  <th className="text-center px-4 py-3 font-medium text-muted-foreground">الإجمالي</th>
-                  <th className="text-center px-4 py-3 font-medium text-muted-foreground">المتبقي</th>
-                  <th className="text-center px-4 py-3 font-medium text-muted-foreground">الحالة</th>
-                  <th className="text-right px-4 py-3 font-medium text-muted-foreground">تاريخ الإصدار</th>
-                  <th className="text-center px-4 py-3 font-medium text-muted-foreground">إجراءات</th>
-                </tr>
-              </thead>
-              <tbody>
-                {invoices.map((invoice) => {
-                  const statusInfo = STATUS_LABELS[invoice.status];
-                  return (
-                    <tr key={invoice.id} className="data-table-row">
-                      <td className="px-5 py-3">
-                        <div className="flex items-center gap-2 flex-wrap">
-                          <Link prefetch={false} href={`/dashboard/sales/${invoice.id}`} className="font-medium font-mono text-primary hover:underline">
-                            {invoice.invoiceNumber}
-                          </Link>
-                          {invoice.isLegacy && (
-                            <span className="text-[10px] font-semibold px-2 py-0.5 rounded-full bg-amber-100 text-amber-800 dark:bg-amber-900/40 dark:text-amber-300 border border-amber-300/70 dark:border-amber-700/60">
-                              مديونية سابقة
-                            </span>
-                          )}
-                        </div>
-                      </td>
-                      <td className="px-4 py-3">
-                        <p className="font-medium text-foreground">{invoice.pharmacy.name}</p>
-                        <p className="text-xs text-muted-foreground flex items-center gap-1 mt-0.5">
-                          {invoice.pharmacy.governorate.name}
-                          <ArrowRight className="w-2.5 h-2.5 rotate-180" />
-                          المندوب: {invoice.salesRep?.name ?? "غير محدد / مديونية عامة"}
-                        </p>
-                      </td>
-                      <td className="px-4 py-3 text-center">
-                        <span className={cn(
-                          "text-[11px] font-medium px-2 py-0.5 rounded-full border",
-                          invoice.isLegacy
-                            ? "border-amber-300 text-amber-800 bg-amber-50 dark:border-amber-800/50 dark:text-amber-300 dark:bg-amber-900/20"
-                            : invoice.type === InvoiceType.CASH
-                            ? "border-green-200 text-green-700 bg-green-50 dark:border-green-900/50 dark:text-green-400 dark:bg-green-900/10"
-                            : "border-blue-200 text-blue-700 bg-blue-50 dark:border-blue-900/50 dark:text-blue-400 dark:bg-blue-900/10"
-                        )}>
-                          {invoice.isLegacy ? "مديونية سابقة" : TYPE_LABELS[invoice.type]}
-                        </span>
-                      </td>
-                      <td className="px-4 py-3 text-center font-semibold text-foreground">
-                        {formatCurrency(invoice.total.toString())}
-                      </td>
-                      <td className="px-4 py-3 text-center font-medium text-amber-600">
-                        {Number(invoice.remainingAmount) > 0 ? formatCurrency(invoice.remainingAmount.toString()) : "—"}
-                      </td>
-                      <td className="px-4 py-3 text-center">
-                        <span className={cn("text-[11px] font-medium px-2.5 py-1 rounded-full", statusInfo.class)}>
-                          {statusInfo.label}
-                        </span>
-                      </td>
-                      <td className="px-4 py-3 text-muted-foreground text-xs whitespace-nowrap">
-                        {formatDate(invoice.invoiceDate)}
-                      </td>
-                      <td className="px-4 py-3 text-center">
-                        <Link prefetch={false} href={`/dashboard/sales/${invoice.id}`} className="text-xs text-primary hover:underline">
-                          عرض
-                        </Link>
-                      </td>
-                    </tr>
-                  );
-                })}
-              </tbody>
-            </table>
-          </div>
-        )}
-      </div>
+      {/* Invoice Table with instant client-side search */}
+      <InvoicesList
+        invoices={invoiceRows}
+        salesReps={salesReps.map((rep) => ({ id: rep.id, name: rep.name }))}
+        clients={clients.map((client) => ({ id: client.id, name: client.name }))}
+        currentFilters={{
+          status: searchParams.status,
+          type: searchParams.type,
+          repId: searchParams.repId,
+          clientId: searchParams.clientId,
+          from: searchParams.from,
+          to: searchParams.to,
+        }}
+      />
     </div>
   );
 }

@@ -1,10 +1,8 @@
 "use client";
 
-import { Search, Sun, Moon, Loader2 } from "lucide-react";
+import { Sun, Moon } from "lucide-react";
 import { useState, useEffect } from "react";
 import { UserRole } from "@prisma/client";
-import { cn } from "@/lib/utils";
-import { useDebouncedSearchParam } from "@/hooks/use-debounced-search-param";
 
 // ─── Types ───────────────────────────────────────────────────
 
@@ -38,9 +36,6 @@ function getInitials(name: string | null | undefined): string {
 
 export function TopBar({ user }: TopBarProps) {
   const [isDark, setIsDark] = useState(false);
-  const { searchInput, setSearchInput, isPending } = useDebouncedSearchParam({
-    delay: 350,
-  });
 
   // ── Theme toggle with localStorage persistence ─────────────
   useEffect(() => {
@@ -63,29 +58,6 @@ export function TopBar({ user }: TopBarProps) {
 
   return (
     <header className="h-16 bg-card/90 backdrop-blur-md border-b border-border/60 flex items-center gap-4 px-5 lg:px-7 shrink-0 sticky top-0 z-30 print:hidden">
-
-      {/* ── Search ─────────────────────────────────────────── */}
-      <div className="relative flex-1 max-w-md">
-        {isPending ? (
-          <Loader2 className="absolute right-3.5 top-1/2 -translate-y-1/2 w-4 h-4 text-primary animate-spin" />
-        ) : (
-          <Search className="absolute right-3.5 top-1/2 -translate-y-1/2 w-4 h-4 text-muted-foreground pointer-events-none" />
-        )}
-        <input
-          type="search"
-          placeholder="بحث سريع في النظام..."
-          id="topbar-search"
-          value={searchInput}
-          onChange={(e) => setSearchInput(e.target.value)}
-          aria-label="بحث سريع في النظام"
-          className={cn(
-            "w-full pr-10 pl-4 py-2 text-sm rounded-xl",
-            "bg-muted/60 border border-border/60",
-            "focus:outline-none focus:ring-2 focus:ring-primary/25 focus:border-primary/50 focus:bg-card",
-            "placeholder:text-muted-foreground/60 transition-all duration-200"
-          )}
-        />
-      </div>
 
       {/* ── Actions ────────────────────────────────────────── */}
       <div className="mr-auto flex items-center gap-1.5 relative">

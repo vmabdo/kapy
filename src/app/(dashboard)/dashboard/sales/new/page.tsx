@@ -10,7 +10,7 @@ export const metadata: Metadata = { title: "إصدار فاتورة جديدة" 
 export const dynamic = "force-dynamic";
 
 export default async function NewInvoicePage({ searchParams }: { searchParams: { clientId?: string } }) {
-  const [clients, salesReps, products] = await Promise.all([
+  const [clients, salesReps, products, subWarehouses] = await Promise.all([
     prisma.pharmacy.findMany({
       where: { isActive: true },
       orderBy: { name: "asc" },
@@ -27,7 +27,46 @@ export default async function NewInvoicePage({ searchParams }: { searchParams: {
     }),
     getAllSalesReps(),
     getAllProducts(),
+    // Invoices are fulfilled from the SUB warehouse in the client's governorate.
+    // Fetching them lets the product combobox show accurate per-governorate stock.
+    prisma.warehouse.findMany({
+      where: { type: "SUB", isActive: true },
+      select: { id: true, governorateId: true },
+    }),
   ]);
+
+  const warehouseGovernorate = new Map(
+    subWarehouses.map((warehouse) => [warehouse.id, warehouse.governorateId])
+  );
+
+  const productOptions = products.map((product) => {
+    const stockByGovernorate: Record<string, number> = {};
+    let totalStock = 0;
+
+    for (const stockItem of product.stockItems) {
+      const available = Math.max(
+        0,
+        Number(stockItem.quantity) - Number(stockItem.reservedQty)
+      );
+      const governorateId = warehouseGovernorate.get(stockItem.warehouseId);
+      if (!governorateId) continue;
+
+      totalStock += available;
+      stockByGovernorate[governorateId] =
+        (stockByGovernorate[governorateId] ?? 0) + available;
+    }
+
+    return {
+      id: product.id,
+      name: product.name,
+      nameEn: product.nameEn,
+      sku: product.sku,
+      unit: product.unit,
+      sellingPrice: Number(product.sellingPrice),
+      stockByGovernorate,
+      totalStock,
+    };
+  });
 
   return (
     <div>
@@ -59,7 +98,7 @@ export default async function NewInvoicePage({ searchParams }: { searchParams: {
           governorate: c.governorate,
         }))}
         salesReps={salesReps}
-        products={products.map(p => ({ id: p.id, name: p.name, sku: p.sku, unit: p.unit, sellingPrice: Number(p.sellingPrice) }))}
+        products={productOptions}
         initialClientId={searchParams.clientId}
       />
     </div>
